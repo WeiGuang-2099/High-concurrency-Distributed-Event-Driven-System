@@ -1,0 +1,48 @@
+server:
+  port: 7091
+
+spring:
+  application:
+    name: seata-server
+
+seata:
+  config:
+    type: nacos
+    nacos:
+      server-addr: nacos:8848
+      namespace:
+      group: SEATA_GROUP
+      username: nacos
+      password: nacos
+  registry:
+    type: nacos
+    nacos:
+      application: seata-server
+      server-addr: nacos:8848
+      namespace:
+      group: SEATA_GROUP
+      cluster: default
+      username: nacos
+      password: nacos
+  store:
+    mode: db
+    db:
+      datasource: druid
+      db-type: mysql
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      url: jdbc:mysql://mysql:3306/seata_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      user: root
+      password: root
+      min-conn: 5
+      max-conn: 30
+      global-table: global_table
+      branch-table: branch_table
+      lock-table: lock_table
+      distributed-lock-table: distributed_lock
+      query-limit: 100
+      max-wait: 5000
+  security:
+    secretKey: SeataSecretKey0c382ef121d77804315920929adfd13ea24e0f8b
+    tokenValidityInMilliseconds: 1800000
+    ignore:
+      urls: /,/**/*.css,/**/*.js,/**/*.html,/**/*.map,/**/*.svg,/**/*.png,/**/*.ico,/console-fe/public/**,/api/v1/auth/login

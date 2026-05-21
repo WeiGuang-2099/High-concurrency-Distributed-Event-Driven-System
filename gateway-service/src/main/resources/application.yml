@@ -1,0 +1,101 @@
+server:
+  port: 8080
+
+spring:
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: auction-service
+          uri: lb://auction-service
+          predicates:
+            - Path=/api/auctions/**
+          filters:
+            - StripPrefix=0
+
+        - id: ticket-service
+          uri: lb://ticket-service
+          predicates:
+            - Path=/api/tickets/**
+          filters:
+            - StripPrefix=0
+
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - StripPrefix=0
+
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=0
+
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/notifications/**
+          filters:
+            - StripPrefix=0
+
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origins: "*"
+            allowed-methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowed-headers: "*"
+            allow-credentials: true
+            max-age: 3600
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    org.springframework.cloud.gateway: DEBUG
+
+jwt:
+  public-key: |-
+    -----BEGIN CERTIFICATE-----
+    MIIDbzCCAlegAwIBAgIEbCJPVDANBgkqhkiG9w0BAQsFADBoMQswCQYDVQQGEwJB
+    VTEMMAoGA1UECBMDTlNXMQ8wDQYDVQQHEwZTeWRuZXkxEDAOBgNVBAoTB0F1Y3Rp
+    b24xDTALBgNVBAsTBEF1dGgxGTAXBgNVBAMTEEF1Y3Rpb24gUGxhdGZvcm0wHhcN
+    MjYwNTIxMDYwNzU0WhcNMzYwNTE4MDYwNzU0WjBoMQswCQYDVQQGEwJBVTEMMAoG
+    A1UECBMDTlNXMQ8wDQYDVQQHEwZTeWRuZXkxEDAOBgNVBAoTB0F1Y3Rpb24xDTAL
+    BgNVBAsTBEF1dGgxGTAXBgNVBAMTEEF1Y3Rpb24gUGxhdGZvcm0wggEiMA0GCSqG
+    SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCWroPJNSYR13wUTnw8h214joITJDPpCybf
+    f/oBeJGwdy0R9repnHtuSiKkn6plOtyR1fyS0y4d6hnMFXQmuhLOQnYc13pIXVoI
+    P1RJo3qa85j4pItx1lPJ4H2dgvEWFR3hm4N2Lcwqp7F4MNtgeEES/ahwnOAsc3FR
+    IV75giw0SfmTeRlGSxBA9H6OHVohG9zfOKdBoNUO7SDDQlc+TgwL6o4BDan7oeHo
+    jWWGjJUQKi/3gJYunAC0LwyOjVXpkLK51AHTAWeOe6pVG31TVfO+/qVsaDRxEiqF
+    Du2bHqGmpk7M/Yrt9jNMhA7o9wmpv7AqRWQo1sPWV9clbSX4Cs3XAgMBAAGjITAf
+    MB0GA1UdDgQWBBSGLsffX5h4VErBBCXlCuB6JBTwAjANBgkqhkiG9w0BAQsFAAOC
+    AQEAARnDYnGD/HH9S7CJ8r/62HY+eyyBdnIrAjza21y8C3wfqMO5Cxe2x0qkFF9V
+    ko48xRzsOQJLxH4RLdt9k0xPLQ/zHydRGbr9aiu2inRHaHeIImPcxMfic/pQzv0A
+    fORHnG5wiVvXo+zetH3gEWoTvTuCm8VDeL1Z4+btAMHQXOHsuxb2rajCU9lC16oX
+    Drw3QtHm44e6loTMNAtxJjnEjrxEsdI+zsAnhYGEOHe1evsrdoWxwERId+9Pj6Dg
+    UwWAOLCCOwXWKF0k80t9mAMqqQ12iH9P1Q8M0+A2YBh5uxlhkGSJnHNiyKw4STKN
+    1Im5zl94rh/f9Y17qmHlaK9yWw==
+    -----END CERTIFICATE-----
+  issuer: auction-platform

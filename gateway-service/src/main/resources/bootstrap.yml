@@ -1,0 +1,13 @@
+spring:
+  application:
+    name: gateway-service
+  cloud:
+    nacos:
+      config:
+        server-addr: localhost:8848
+        file-extension: yml
+        shared-configs:
+          - data-id: shared-redis.yml
+            refresh: true
+          - data-id: shared-jwt.yml
+            refresh: true
