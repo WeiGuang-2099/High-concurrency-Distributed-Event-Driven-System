@@ -16,6 +16,7 @@ public class BaseEvent {
     private String aggregateId;
     private String eventType;
     private Instant timestamp;
+    private String correlationId;
 
     public BaseEvent(String aggregateId, String eventType) {
         this.eventId = UUID.randomUUID().toString();

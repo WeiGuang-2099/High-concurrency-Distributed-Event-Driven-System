@@ -5,15 +5,19 @@ USE `auction_db`;
 CREATE TABLE IF NOT EXISTS `auction` (
     `id` BIGINT NOT NULL AUTO_INCREMENT,
     `event_name` VARCHAR(200) NOT NULL,
+    `description` VARCHAR(1000) DEFAULT NULL,
+    `ticket_type_id` BIGINT DEFAULT NULL,
     `starting_price` DECIMAL(10, 2) NOT NULL,
     `current_highest_bid` DECIMAL(10, 2) DEFAULT NULL,
-    `status` ENUM('ACTIVE', 'SETTLED', 'EXPIRED') NOT NULL DEFAULT 'ACTIVE',
+    `current_highest_bidder_id` BIGINT DEFAULT NULL,
+    `status` ENUM('PENDING', 'ACTIVE', 'SETTLED', 'EXPIRED') NOT NULL DEFAULT 'PENDING',
     `start_time` DATETIME NOT NULL,
     `end_time` DATETIME NOT NULL,
     `winner_id` BIGINT DEFAULT NULL,
-    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
+    INDEX `idx_auction_status_start_time` (`status`, `start_time`),
     INDEX `idx_auction_status_end_time` (`status`, `end_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -21,10 +25,14 @@ CREATE TABLE IF NOT EXISTS `bid` (
     `id` BIGINT NOT NULL AUTO_INCREMENT,
     `auction_id` BIGINT NOT NULL,
     `user_id` BIGINT NOT NULL,
+    `username` VARCHAR(50) NOT NULL DEFAULT '',
     `amount` DECIMAL(10, 2) NOT NULL,
-    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `bid_time` DATETIME(3) NOT NULL,
+    `event_id` VARCHAR(40) NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
-    INDEX `idx_bid_auction_id` (`auction_id`),
+    UNIQUE KEY `uk_bid_event_id` (`event_id`),
+    INDEX `idx_bid_auction_created` (`auction_id`, `created_at` DESC),
     INDEX `idx_bid_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

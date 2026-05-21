@@ -7,9 +7,7 @@ spring:
         server-addr: localhost:8848
         file-extension: yml
         shared-configs:
-          - data-id: shared-db.yml
-            refresh: true
-          - data-id: shared-redis.yml
-            refresh: true
           - data-id: shared-kafka.yml
+            refresh: true
+          - data-id: shared-jwt.yml
             refresh: true
