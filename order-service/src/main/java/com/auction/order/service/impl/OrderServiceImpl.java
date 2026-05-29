@@ -76,11 +76,10 @@ public class OrderServiceImpl implements OrderService {
         orderMapper.insert(order);
 
         final Long orderId = order.getId();
-        sendTimeoutMessage(orderId);
-
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                sendTimeoutMessage(orderId);
                 eventProducer.publishOrderCreated(orderId, userId, "TICKET",
                         request.getReservationId(), request.getAmount());
                 log.info("Created TICKET order: id={}, userId={}, reservationId={}",
@@ -103,11 +102,10 @@ public class OrderServiceImpl implements OrderService {
         orderMapper.insert(order);
 
         final Long orderId = order.getId();
-        sendTimeoutMessage(orderId);
-
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                sendTimeoutMessage(orderId);
                 eventProducer.publishOrderCreated(orderId, winnerId, "AUCTION",
                         auctionId, amount);
                 log.info("Created AUCTION order: id={}, winnerId={}, auctionId={}",
@@ -121,19 +119,13 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public PayResponse pay(Long userId, Long orderId) {
-        Order order = orderMapper.selectById(orderId);
-        if (order == null) {
-            throw new BusinessException(404, "Order not found");
-        }
-        if (!order.getUserId().equals(userId)) {
-            throw new BusinessException(403, "Not your order");
-        }
+        Order order = loadAndVerifyOwner(userId, orderId);
 
         if (order.getStatus() == OrderStatus.PAYING) {
             return PayResponse.builder()
                     .orderId(orderId)
                     .status(OrderStatus.PAYING.name())
-                    .paymentStatus("IN_PROGRESS")
+                    .paymentStatus(PaymentStatus.PENDING.name())
                     .message("Payment already in progress")
                     .build();
         }
@@ -141,7 +133,7 @@ public class OrderServiceImpl implements OrderService {
             return PayResponse.builder()
                     .orderId(orderId)
                     .status(OrderStatus.PAID.name())
-                    .paymentStatus("SUCCESS")
+                    .paymentStatus(PaymentStatus.SUCCESS.name())
                     .message("Already paid")
                     .build();
         }
@@ -149,7 +141,7 @@ public class OrderServiceImpl implements OrderService {
             return PayResponse.builder()
                     .orderId(orderId)
                     .status(OrderStatus.COMPLETED.name())
-                    .paymentStatus("SUCCESS")
+                    .paymentStatus(PaymentStatus.SUCCESS.name())
                     .message("Order already completed")
                     .build();
         }
@@ -184,7 +176,7 @@ public class OrderServiceImpl implements OrderService {
         boolean success = simulatePayment();
 
         if (success) {
-            return handlePaymentSuccess(orderId, userId, order.getAmount(), payment);
+            return handlePaymentSuccess(order, payment);
         } else {
             return handlePaymentFailure(orderId, payment);
         }
@@ -193,13 +185,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public void cancel(Long userId, Long orderId) {
-        Order order = orderMapper.selectById(orderId);
-        if (order == null) {
-            throw new BusinessException(404, "Order not found");
-        }
-        if (!order.getUserId().equals(userId)) {
-            throw new BusinessException(403, "Not your order");
-        }
+        Order order = loadAndVerifyOwner(userId, orderId);
         if (order.getStatus() != OrderStatus.CREATED) {
             throw new BusinessException(409, "Can only cancel orders in CREATED status");
         }
@@ -229,13 +215,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderResponse getById(Long userId, Long orderId) {
-        Order order = orderMapper.selectById(orderId);
-        if (order == null) {
-            throw new BusinessException(404, "Order not found");
-        }
-        if (!order.getUserId().equals(userId)) {
-            throw new BusinessException(403, "Not your order");
-        }
+        Order order = loadAndVerifyOwner(userId, orderId);
         return toResponse(order);
     }
 
@@ -255,6 +235,8 @@ public class OrderServiceImpl implements OrderService {
         return responsePage;
     }
 
+    @Override
+    @Transactional
     public void expireOrder(Long orderId) {
         Order order = orderMapper.selectById(orderId);
         if (order == null) {
@@ -282,8 +264,24 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        eventProducer.publishOrderExpired(orderId, order.getUserId());
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventProducer.publishOrderExpired(orderId, order.getUserId());
+            }
+        });
         log.info("Expired order: id={}", orderId);
+    }
+
+    private Order loadAndVerifyOwner(Long userId, Long orderId) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(404, "Order not found");
+        }
+        if (!order.getUserId().equals(userId)) {
+            throw new BusinessException(403, "Not your order");
+        }
+        return order;
     }
 
     private boolean simulatePayment() {
@@ -296,9 +294,8 @@ public class OrderServiceImpl implements OrderService {
         return RANDOM.nextDouble() < successRate;
     }
 
-    @Transactional
-    private PayResponse handlePaymentSuccess(Long orderId, Long userId,
-                                              BigDecimal amount, Payment payment) {
+    private PayResponse handlePaymentSuccess(Order order, Payment payment) {
+        Long orderId = order.getId();
         orderMapper.compareAndSetStatus(orderId,
                 OrderStatus.PAYING.name(), OrderStatus.PAID.name());
 
@@ -310,7 +307,6 @@ public class OrderServiceImpl implements OrderService {
         paidOrder.setPaidAt(LocalDateTime.now());
         orderMapper.updateById(paidOrder);
 
-        Order order = orderMapper.selectById(orderId);
         if (order.getType() == OrderType.TICKET) {
             try {
                 ticketFeignClient.confirmReservation(order.getReferenceId());
@@ -325,7 +321,7 @@ public class OrderServiceImpl implements OrderService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                eventProducer.publishPaymentCompleted(orderId, userId, amount);
+                eventProducer.publishPaymentCompleted(orderId, order.getUserId(), order.getAmount());
                 log.info("Payment completed: orderId={}", orderId);
             }
         });
@@ -333,12 +329,11 @@ public class OrderServiceImpl implements OrderService {
         return PayResponse.builder()
                 .orderId(orderId)
                 .status(OrderStatus.COMPLETED.name())
-                .paymentStatus("SUCCESS")
+                .paymentStatus(PaymentStatus.SUCCESS.name())
                 .message("Payment successful")
                 .build();
     }
 
-    @Transactional
     private PayResponse handlePaymentFailure(Long orderId, Payment payment) {
         orderMapper.compareAndSetStatus(orderId,
                 OrderStatus.PAYING.name(), OrderStatus.CREATED.name());
@@ -351,7 +346,7 @@ public class OrderServiceImpl implements OrderService {
         return PayResponse.builder()
                 .orderId(orderId)
                 .status(OrderStatus.CREATED.name())
-                .paymentStatus("FAILED")
+                .paymentStatus(PaymentStatus.FAILED.name())
                 .message("Payment failed, please retry")
                 .build();
     }

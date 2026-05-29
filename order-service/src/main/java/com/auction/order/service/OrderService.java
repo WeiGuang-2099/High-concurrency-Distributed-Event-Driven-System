@@ -19,4 +19,6 @@ public interface OrderService {
     OrderResponse getById(Long userId, Long orderId);
 
     Page<OrderResponse> listByUserId(Long userId, int page, int size);
+
+    void expireOrder(Long orderId);
 }
