@@ -1,7 +1,5 @@
-package com.auction.auction.security;
+package com.auction.common.security;
 
-import com.auction.common.security.GatewayHeaders;
-import com.auction.common.security.UserContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;

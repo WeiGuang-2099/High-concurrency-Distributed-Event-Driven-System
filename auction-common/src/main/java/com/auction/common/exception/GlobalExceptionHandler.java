@@ -1,4 +1,4 @@
-package com.auction.ticket.exception;
+package com.auction.common.exception;
 
 import com.auction.common.dto.ApiResponse;
 import org.slf4j.Logger;

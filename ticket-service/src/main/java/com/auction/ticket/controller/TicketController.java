@@ -5,7 +5,7 @@ import com.auction.common.security.UserContext;
 import com.auction.ticket.controller.dto.ReserveRequest;
 import com.auction.ticket.controller.dto.ReserveResponse;
 import com.auction.ticket.controller.dto.TicketStockResponse;
-import com.auction.ticket.security.UserContextHolder;
+import com.auction.common.security.UserContextHolder;
 import com.auction.ticket.service.TicketStockService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;

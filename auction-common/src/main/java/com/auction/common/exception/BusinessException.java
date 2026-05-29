@@ -1,4 +1,4 @@
-package com.auction.ticket.exception;
+package com.auction.common.exception;
 
 import lombok.Getter;
 

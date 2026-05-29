@@ -9,7 +9,7 @@ import com.auction.ticket.domain.entity.Reservation;
 import com.auction.ticket.domain.entity.TicketStock;
 import com.auction.ticket.domain.enums.ReservationStatus;
 import com.auction.ticket.event.TicketEventProducer;
-import com.auction.ticket.exception.BusinessException;
+import com.auction.common.exception.BusinessException;
 import com.auction.ticket.repository.ReservationMapper;
 import com.auction.ticket.repository.TicketStockMapper;
 import com.auction.ticket.service.RedisKeys;

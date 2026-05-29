@@ -3,7 +3,7 @@ package com.auction.notification.controller;
 import com.auction.common.dto.ApiResponse;
 import com.auction.common.security.UserContext;
 import com.auction.notification.domain.entity.Notification;
-import com.auction.notification.security.UserContextHolder;
+import com.auction.common.security.UserContextHolder;
 import com.auction.notification.service.NotificationPersistenceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;

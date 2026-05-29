@@ -2,8 +2,8 @@ package com.auction.auction.controller;
 
 import com.auction.auction.controller.dto.AuctionResponse;
 import com.auction.auction.controller.dto.CreateAuctionRequest;
-import com.auction.auction.exception.BusinessException;
-import com.auction.auction.security.UserContextHolder;
+import com.auction.common.exception.BusinessException;
+import com.auction.common.security.UserContextHolder;
 import com.auction.auction.service.AuctionService;
 import com.auction.common.dto.ApiResponse;
 import com.auction.common.security.UserContext;

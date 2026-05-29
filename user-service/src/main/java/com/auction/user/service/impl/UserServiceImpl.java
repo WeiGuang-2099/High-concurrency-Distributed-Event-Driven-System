@@ -3,7 +3,7 @@ package com.auction.user.service.impl;
 import com.auction.user.controller.dto.*;
 import com.auction.user.domain.entity.User;
 import com.auction.user.domain.enums.RoleEnum;
-import com.auction.user.exception.BusinessException;
+import com.auction.common.exception.BusinessException;
 import com.auction.user.repository.UserMapper;
 import com.auction.user.security.JwtTokenProvider;
 import com.auction.user.service.UserService;

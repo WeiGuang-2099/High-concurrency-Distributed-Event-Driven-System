@@ -5,7 +5,7 @@ import com.auction.auction.controller.dto.CreateAuctionRequest;
 import com.auction.auction.controller.dto.PageResponse;
 import com.auction.auction.domain.entity.Auction;
 import com.auction.auction.domain.enums.AuctionStatus;
-import com.auction.auction.exception.BusinessException;
+import com.auction.common.exception.BusinessException;
 import com.auction.auction.repository.AuctionMapper;
 import com.auction.auction.service.AuctionService;
 import com.auction.auction.service.RedisKeys;

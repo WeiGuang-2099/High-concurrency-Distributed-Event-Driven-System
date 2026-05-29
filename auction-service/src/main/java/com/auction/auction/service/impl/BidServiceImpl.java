@@ -1,7 +1,7 @@
 package com.auction.auction.service.impl;
 
 import com.auction.auction.controller.dto.PlaceBidResponse;
-import com.auction.auction.exception.BusinessException;
+import com.auction.common.exception.BusinessException;
 import com.auction.auction.service.BidService;
 import com.auction.auction.service.RedisKeys;
 import com.auction.common.event.KafkaTopics;
