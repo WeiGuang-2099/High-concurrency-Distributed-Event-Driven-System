@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -17,10 +18,15 @@ import java.util.List;
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    private final JwtTokenProvider jwtTokenProvider;
+    private static final String BLACKLIST_KEY_PREFIX = "token:blacklist:";
 
-    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
+    private final JwtTokenProvider jwtTokenProvider;
+    private final StringRedisTemplate stringRedisTemplate;
+
+    public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider,
+                                   StringRedisTemplate stringRedisTemplate) {
         this.jwtTokenProvider = jwtTokenProvider;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
@@ -31,7 +37,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (StringUtils.hasText(token)) {
             UserPrincipal principal = jwtTokenProvider.parseToken(token);
-            if (principal != null) {
+            if (principal != null && !isTokenBlacklisted(principal.getJti())) {
                 List<SimpleGrantedAuthority> authorities = principal.getRoles().stream()
                         .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                         .toList();
@@ -51,5 +57,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return bearerToken.substring(7);
         }
         return null;
+    }
+
+    private boolean isTokenBlacklisted(String jti) {
+        if (jti == null || jti.isBlank()) {
+            return false;
+        }
+        return Boolean.TRUE.equals(stringRedisTemplate.hasKey(BLACKLIST_KEY_PREFIX + jti));
     }
 }
