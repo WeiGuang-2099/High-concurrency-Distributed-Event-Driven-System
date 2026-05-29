@@ -6,6 +6,7 @@ import com.auction.auction.domain.enums.AuctionStatus;
 import com.auction.auction.repository.AuctionMapper;
 import com.auction.auction.repository.BidMapper;
 import com.auction.auction.service.RedisKeys;
+import com.auction.auction.service.SettlementService;
 import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.auction.AuctionActivatedEvent;
 import com.auction.common.event.auction.AuctionExpiredEvent;
@@ -31,15 +32,18 @@ public class AuctionLifecycleScheduler {
     private final BidMapper bidMapper;
     private final StringRedisTemplate redis;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final SettlementService settlementService;
 
     public AuctionLifecycleScheduler(AuctionMapper auctionMapper,
                                      BidMapper bidMapper,
                                      StringRedisTemplate redis,
-                                     KafkaTemplate<String, Object> kafkaTemplate) {
+                                     KafkaTemplate<String, Object> kafkaTemplate,
+                                     SettlementService settlementService) {
         this.auctionMapper = auctionMapper;
         this.bidMapper = bidMapper;
         this.redis = redis;
         this.kafkaTemplate = kafkaTemplate;
+        this.settlementService = settlementService;
     }
 
     @Scheduled(fixedRateString = "${auction.scheduler.poll-interval-ms:1000}")
@@ -83,6 +87,17 @@ public class AuctionLifecycleScheduler {
                 int rows = auctionMapper.markSettled(
                         auction.getId(), highest.getUserId(), highest.getAmount());
                 if (rows == 0) {
+                    continue;
+                }
+                try {
+                    settlementService.settle(
+                            auction.getId(), highest.getUserId(),
+                            highest.getAmount(), auction.getTicketTypeId());
+                } catch (Exception e) {
+                    log.error("Seata settlement failed for auction={}, rolling back auction status",
+                            auction.getId(), e);
+                    auctionMapper.markActive(auction.getId());
+                    redis.opsForValue().set(RedisKeys.auctionStatus(auction.getId()), "ACTIVE");
                     continue;
                 }
                 AuctionSettledEvent evt = new AuctionSettledEvent(
