@@ -94,7 +94,9 @@ services:
       - auction-network
 
   rabbitmq:
-    image: rabbitmq:3-management
+    build:
+      context: ./deploy/rabbitmq
+      dockerfile: Dockerfile
     container_name: auction-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
