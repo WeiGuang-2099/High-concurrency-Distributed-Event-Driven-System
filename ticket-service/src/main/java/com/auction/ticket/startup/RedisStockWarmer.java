@@ -43,8 +43,7 @@ public class RedisStockWarmer implements ApplicationRunner {
             ticketStockService.markReady();
             log.info("Redis stock cache warmed up: {} stock entries loaded", stocks.size());
         } catch (Exception e) {
-            log.error("Failed to warm up Redis stock cache", e);
-            ticketStockService.markReady();
+            log.error("Failed to warm up Redis stock cache. Service will remain unavailable (503) until restarted.", e);
         }
     }
 }
