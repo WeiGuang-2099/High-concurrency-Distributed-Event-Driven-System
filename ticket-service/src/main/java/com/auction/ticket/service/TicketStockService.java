@@ -18,4 +18,6 @@ public interface TicketStockService {
     void cancel(Long userId, Long reservationId);
 
     TicketStockResponse createTicketStock(CreateTicketRequest request);
+
+    Long settleReserve(Long ticketTypeId, Long userId, int quantity);
 }

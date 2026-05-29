@@ -63,3 +63,18 @@ mybatis-plus:
 logging:
   level:
     com.auction.ticket: INFO
+
+seata:
+  enabled: true
+  application-id: ticket-service
+  tx-service-group: auction-tx-group
+  service:
+    vgroup-mapping:
+      auction-tx-group: default
+  registry:
+    type: nacos
+    nacos:
+      server-addr: localhost:8848
+      namespace:
+      group: SEATA_GROUP
+      application: seata-server

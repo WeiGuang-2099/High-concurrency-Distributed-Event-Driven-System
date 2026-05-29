@@ -240,6 +240,35 @@ public class TicketStockServiceImpl implements TicketStockService {
         return toStockResponse(stock);
     }
 
+    @Override
+    @Transactional
+    public Long settleReserve(Long ticketTypeId, Long userId, int quantity) {
+        TicketStock stock = stockMapper.selectById(ticketTypeId);
+        if (stock == null) {
+            throw new BusinessException(404, "Ticket stock not found");
+        }
+
+        int available = stock.getTotalQuantity() - stock.getReservedQuantity() - stock.getSoldQuantity();
+        if (available < quantity) {
+            throw new BusinessException(400, "Out of stock");
+        }
+
+        Reservation reservation = new Reservation();
+        reservation.setStockId(stock.getId());
+        reservation.setUserId(userId);
+        reservation.setQuantity(quantity);
+        reservation.setStatus(ReservationStatus.PENDING);
+        reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
+        reservationMapper.insert(reservation);
+
+        stockMapper.incrementReserved(stock.getId(), quantity);
+
+        log.info("Settle-reserved {} tickets for stockId={}, userId={}, reservationId={}",
+                quantity, stock.getId(), userId, reservation.getId());
+
+        return reservation.getId();
+    }
+
     @SuppressWarnings("unchecked")
     private void rollbackRedis(String stockKey, int quantity) {
         try {
