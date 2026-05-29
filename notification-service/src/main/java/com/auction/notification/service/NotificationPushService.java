@@ -36,4 +36,13 @@ public class NotificationPushService {
         messagingTemplate.convertAndSend(destination, payload);
         log.debug("Pushed notification to {}: {}", destination, payload);
     }
+
+    /**
+     * Push a ticket-related notification to all subscribers of a ticket event.
+     */
+    public void pushToTicket(Long eventId, String suffix, Object payload) {
+        String destination = "/topic/ticket/" + (eventId != null ? eventId + "/" : "") + suffix;
+        messagingTemplate.convertAndSend(destination, payload);
+        log.debug("Pushed ticket notification to {}: {}", destination, payload);
+    }
 }

@@ -6,6 +6,9 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/notification_db
   kafka:
     bootstrap-servers: localhost:9092
     consumer:

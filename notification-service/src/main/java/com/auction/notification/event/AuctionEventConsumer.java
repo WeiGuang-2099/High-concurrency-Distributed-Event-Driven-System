@@ -9,6 +9,8 @@ import com.auction.notification.controller.dto.AuctionExpiredMessage;
 import com.auction.notification.controller.dto.AuctionSettledMessage;
 import com.auction.notification.controller.dto.BidUpdateMessage;
 import com.auction.notification.controller.dto.OutbidNotificationMessage;
+import com.auction.notification.domain.entity.Notification;
+import com.auction.notification.service.NotificationPersistenceService;
 import com.auction.notification.service.NotificationPushService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,9 +24,12 @@ public class AuctionEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(AuctionEventConsumer.class);
 
     private final NotificationPushService pushService;
+    private final NotificationPersistenceService persistenceService;
 
-    public AuctionEventConsumer(NotificationPushService pushService) {
+    public AuctionEventConsumer(NotificationPushService pushService,
+                                NotificationPersistenceService persistenceService) {
         this.pushService = pushService;
+        this.persistenceService = persistenceService;
     }
 
     @KafkaListener(
@@ -72,6 +77,14 @@ public class AuctionEventConsumer {
                 .newAmount(event.getNewAmount())
                 .build();
         pushService.pushToAuction(event.getAuctionId(), "outbid", message);
+        persistenceService.save(Notification.builder()
+                .userId(event.getOutbidUserId())
+                .type("OUTBID")
+                .title("You have been outbid")
+                .content("Your bid on auction " + event.getAuctionId()
+                        + " has been outbid. Your bid: " + event.getOutbidAmount()
+                        + ", new bid: " + event.getNewAmount())
+                .build());
         log.info("Pushed Outbid notification: auction={} outbidUser={}",
                 event.getAuctionId(), event.getOutbidUserId());
     }
@@ -83,6 +96,13 @@ public class AuctionEventConsumer {
                 .finalAmount(event.getFinalAmount())
                 .build();
         pushService.pushToAuction(event.getAuctionId(), "settled", message);
+        persistenceService.save(Notification.builder()
+                .userId(event.getWinnerId())
+                .type("AUCTION_SETTLED")
+                .title("Auction Won")
+                .content("Congratulations! You won auction " + event.getAuctionId()
+                        + " with a final amount of " + event.getFinalAmount())
+                .build());
         log.info("Pushed AuctionSettled notification: auction={} winner={}",
                 event.getAuctionId(), event.getWinnerId());
     }
