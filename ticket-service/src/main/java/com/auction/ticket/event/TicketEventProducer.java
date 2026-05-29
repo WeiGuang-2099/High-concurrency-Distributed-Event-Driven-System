@@ -4,6 +4,7 @@ import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.ticket.StockConfirmedEvent;
 import com.auction.common.event.ticket.StockReleasedEvent;
 import com.auction.common.event.ticket.StockReservedEvent;
+import com.auction.common.event.ticket.TicketCreatedEvent;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
@@ -14,6 +15,11 @@ public class TicketEventProducer {
 
     public TicketEventProducer(KafkaTemplate<String, Object> kafkaTemplate) {
         this.kafkaTemplate = kafkaTemplate;
+    }
+
+    public void publishTicketCreated(Long eventId, String ticketType, int totalQuantity) {
+        TicketCreatedEvent event = new TicketCreatedEvent(eventId, ticketType, totalQuantity);
+        kafkaTemplate.send(KafkaTopics.TICKET_EVENTS, String.valueOf(eventId), event);
     }
 
     public void publishStockReserved(Long eventId, String ticketType, Long reservationId, Long userId, int quantity) {

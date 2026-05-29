@@ -223,6 +223,10 @@ public class TicketStockServiceImpl implements TicketStockService {
         String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
         redis.opsForValue().set(stockKey, String.valueOf(request.getTotalQuantity()));
 
+        // Publish TicketCreated event
+        eventProducer.publishTicketCreated(
+                request.getEventId(), request.getTicketType(), request.getTotalQuantity());
+
         log.info("Created ticket stock: eventId={}, type={}, total={}",
                 request.getEventId(), request.getTicketType(), request.getTotalQuantity());
 
