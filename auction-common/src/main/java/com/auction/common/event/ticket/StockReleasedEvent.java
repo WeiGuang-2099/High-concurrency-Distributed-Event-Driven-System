@@ -12,15 +12,15 @@ import lombok.NoArgsConstructor;
 public class StockReleasedEvent extends BaseEvent {
 
     private Long reservationId;
-    private Long eventId;
+    private Long ticketEventId;
     private String ticketType;
     private int quantity;
     private String reason;
 
-    public StockReleasedEvent(Long reservationId, Long eventId, String ticketType, int quantity, String reason) {
+    public StockReleasedEvent(Long reservationId, Long ticketEventId, String ticketType, int quantity, String reason) {
         super(String.valueOf(reservationId), EventTypes.STOCK_RELEASED);
         this.reservationId = reservationId;
-        this.eventId = eventId;
+        this.ticketEventId = ticketEventId;
         this.ticketType = ticketType;
         this.quantity = quantity;
         this.reason = reason;

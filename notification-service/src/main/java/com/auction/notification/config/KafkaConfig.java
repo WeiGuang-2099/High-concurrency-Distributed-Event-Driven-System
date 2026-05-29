@@ -46,7 +46,7 @@ public class KafkaConfig {
         // Use Jackson JSON converter with Java Time module for event deserialization
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
-        factory.setMessageConverter(new JsonMessageConverter(mapper));
+        factory.setRecordMessageConverter(new JsonMessageConverter(mapper));
         // Error handling: retry 3 times with 1s gap, then skip
         factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1000L, 3L)));
         return factory;
