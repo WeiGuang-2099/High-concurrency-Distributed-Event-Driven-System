@@ -14,6 +14,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 
@@ -69,20 +71,30 @@ public class StockReleaseConsumer {
         TicketStock stock = stockMapper.selectById(reservation.getStockId());
         if (stock != null) {
             String stockKey = RedisKeys.stock(stock.getEventId(), stock.getTicketType());
-            try {
-                @SuppressWarnings("unchecked")
-                List<Object> result = (List<Object>) redis.execute(
-                        releaseTicketScript, List.of(stockKey), String.valueOf(reservation.getQuantity()));
-                log.info("Redis stock rolled back: key={}, quantity={}", stockKey, reservation.getQuantity());
-            } catch (Exception e) {
-                log.error("Redis rollback failed for delayed release, key={}", stockKey, e);
-            }
+            int quantity = reservation.getQuantity();
+            Long eventId = stock.getEventId();
+            String ticketType = stock.getTicketType();
 
-            eventProducer.publishStockReleased(
-                    reservationId, stock.getEventId(), stock.getTicketType(),
-                    reservation.getQuantity(), "TIMEOUT");
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    rollbackRedis(stockKey, quantity);
+                    eventProducer.publishStockReleased(
+                            reservationId, eventId, ticketType, quantity, "TIMEOUT");
+                }
+            });
         }
 
         log.info("Expired reservation: id={}", reservationId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void rollbackRedis(String stockKey, int quantity) {
+        try {
+            redis.execute(releaseTicketScript, List.of(stockKey), String.valueOf(quantity));
+            log.info("Redis stock rolled back: key={}, quantity={}", stockKey, quantity);
+        } catch (Exception e) {
+            log.error("Redis rollback failed for delayed release, key={}", stockKey, e);
+        }
     }
 }

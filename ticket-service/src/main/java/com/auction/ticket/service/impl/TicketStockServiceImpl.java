@@ -21,6 +21,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -82,7 +84,6 @@ public class TicketStockServiceImpl implements TicketStockService {
 
         String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
 
-        // 1. Redis Lua atomic deduction
         List<Object> result;
         try {
             result = (List<Object>) redis.execute(
@@ -107,58 +108,53 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(404, "Ticket stock not found");
         }
 
-        // 2. MySQL: lookup stock, create reservation, update reserved_quantity
-        try {
-            TicketStock stock = stockMapper.findByEventIdAndTicketType(
-                    request.getEventId(), request.getTicketType());
-            if (stock == null) {
-                rollbackRedis(stockKey, request.getQuantity());
-                throw new BusinessException(404, "Ticket stock not found");
-            }
-
-            Reservation reservation = new Reservation();
-            reservation.setStockId(stock.getId());
-            reservation.setUserId(userId);
-            reservation.setQuantity(request.getQuantity());
-            reservation.setStatus(ReservationStatus.PENDING);
-            reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
-            reservationMapper.insert(reservation);
-
-            stockMapper.incrementReserved(stock.getId(), request.getQuantity());
-
-            // 3. Kafka event
-            eventProducer.publishStockReserved(
-                    request.getEventId(), request.getTicketType(),
-                    reservation.getId(), userId, request.getQuantity());
-
-            // 4. RabbitMQ delayed message (30 min)
-            rabbitTemplate.convertAndSend(
-                    RabbitMQConfig.DELAY_EXCHANGE,
-                    RabbitMQConfig.STOCK_RELEASE_ROUTING_KEY,
-                    reservation.getId(),
-                    msg -> {
-                        msg.getMessageProperties().setDelay(RESERVATION_TIMEOUT_MINUTES * 60 * 1000);
-                        return msg;
-                    });
-
-            log.info("Reserved {} tickets for user={}, event={}, type={}, reservationId={}",
-                    request.getQuantity(), userId, request.getEventId(),
-                    request.getTicketType(), reservation.getId());
-
-            return ReserveResponse.builder()
-                    .reservationId(reservation.getId())
-                    .eventId(request.getEventId())
-                    .ticketType(request.getTicketType())
-                    .quantity(request.getQuantity())
-                    .expireAt(reservation.getExpireAt())
-                    .build();
-        } catch (BusinessException e) {
-            throw e;
-        } catch (Exception e) {
+        TicketStock stock = stockMapper.findByEventIdAndTicketType(
+                request.getEventId(), request.getTicketType());
+        if (stock == null) {
             rollbackRedis(stockKey, request.getQuantity());
-            log.error("MySQL operation failed after Redis deduction, rolled back Redis for key={}", stockKey, e);
-            throw new BusinessException(500, "Reservation failed");
+            throw new BusinessException(404, "Ticket stock not found");
         }
+
+        Reservation reservation = new Reservation();
+        reservation.setStockId(stock.getId());
+        reservation.setUserId(userId);
+        reservation.setQuantity(request.getQuantity());
+        reservation.setStatus(ReservationStatus.PENDING);
+        reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
+        reservationMapper.insert(reservation);
+
+        stockMapper.incrementReserved(stock.getId(), request.getQuantity());
+
+        final Long reservationId = reservation.getId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventProducer.publishStockReserved(
+                        request.getEventId(), request.getTicketType(),
+                        reservationId, userId, request.getQuantity());
+
+                rabbitTemplate.convertAndSend(
+                        RabbitMQConfig.DELAY_EXCHANGE,
+                        RabbitMQConfig.STOCK_RELEASE_ROUTING_KEY,
+                        reservationId,
+                        msg -> {
+                            msg.getMessageProperties().setDelay(RESERVATION_TIMEOUT_MINUTES * 60 * 1000);
+                            return msg;
+                        });
+
+                log.info("Reserved {} tickets for user={}, event={}, type={}, reservationId={}",
+                        request.getQuantity(), userId, request.getEventId(),
+                        request.getTicketType(), reservationId);
+            }
+        });
+
+        return ReserveResponse.builder()
+                .reservationId(reservationId)
+                .eventId(request.getEventId())
+                .ticketType(request.getTicketType())
+                .quantity(request.getQuantity())
+                .expireAt(reservation.getExpireAt())
+                .build();
     }
 
     @Override
@@ -175,9 +171,13 @@ public class TicketStockServiceImpl implements TicketStockService {
         reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CONFIRMED.name());
         stockMapper.decrementReservedAndIncrementSold(reservation.getStockId(), reservation.getQuantity());
 
-        eventProducer.publishStockConfirmed(reservationId, userId);
-
-        log.info("Confirmed reservation id={}, userId={}", reservationId, userId);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventProducer.publishStockConfirmed(reservationId, userId);
+                log.info("Confirmed reservation id={}, userId={}", reservationId, userId);
+            }
+        });
     }
 
     @Override
@@ -191,20 +191,25 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(400, "Reservation is not in PENDING status");
         }
 
+        TicketStock stock = stockMapper.selectById(reservation.getStockId());
+
         reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CANCELLED.name());
         stockMapper.decrementReserved(reservation.getStockId(), reservation.getQuantity());
 
-        // Look up stock to get eventId and ticketType for Redis rollback
-        TicketStock stock = stockMapper.selectById(reservation.getStockId());
         if (stock != null) {
             String stockKey = RedisKeys.stock(stock.getEventId(), stock.getTicketType());
             rollbackRedis(stockKey, reservation.getQuantity());
-            eventProducer.publishStockReleased(
-                    reservationId, stock.getEventId(), stock.getTicketType(),
-                    reservation.getQuantity(), "CANCELLED");
-        }
 
-        log.info("Cancelled reservation id={}, userId={}", reservationId, userId);
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    eventProducer.publishStockReleased(
+                            reservationId, stock.getEventId(), stock.getTicketType(),
+                            reservation.getQuantity(), "CANCELLED");
+                    log.info("Cancelled reservation id={}, userId={}", reservationId, userId);
+                }
+            });
+        }
     }
 
     @Override
@@ -219,16 +224,18 @@ public class TicketStockServiceImpl implements TicketStockService {
         stock.setVersion(0);
         stockMapper.insert(stock);
 
-        // Warm up Redis
         String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
         redis.opsForValue().set(stockKey, String.valueOf(request.getTotalQuantity()));
 
-        // Publish TicketCreated event
-        eventProducer.publishTicketCreated(
-                request.getEventId(), request.getTicketType(), request.getTotalQuantity());
-
-        log.info("Created ticket stock: eventId={}, type={}, total={}",
-                request.getEventId(), request.getTicketType(), request.getTotalQuantity());
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventProducer.publishTicketCreated(
+                        request.getEventId(), request.getTicketType(), request.getTotalQuantity());
+                log.info("Created ticket stock: eventId={}, type={}, total={}",
+                        request.getEventId(), request.getTicketType(), request.getTotalQuantity());
+            }
+        });
 
         return toStockResponse(stock);
     }
@@ -249,7 +256,7 @@ public class TicketStockServiceImpl implements TicketStockService {
                 .eventId(stock.getEventId())
                 .ticketType(stock.getTicketType())
                 .totalQuantity(stock.getTotalQuantity())
-                .availableQuantity(available)
+                .availableQuantity(Math.max(0, available))
                 .reservedQuantity(stock.getReservedQuantity())
                 .soldQuantity(stock.getSoldQuantity())
                 .build();
