@@ -22,7 +22,7 @@ spring:
         - id: ticket-service
           uri: lb://ticket-service
           predicates:
-            - Path=/api/tickets/**
+            - Path=/api/tickets/**,/api/admin/tickets/**
           filters:
             - StripPrefix=0
 
