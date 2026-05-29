@@ -4,6 +4,8 @@ public final class KafkaTopics {
 
     public static final String AUCTION_EVENTS = "auction-events";
     public static final String AUCTION_EVENTS_DLT = "auction-events-dlt";
+    public static final String TICKET_EVENTS = "ticket-events";
+    public static final String TICKET_EVENTS_DLT = "ticket-events-dlt";
 
     private KafkaTopics() {
     }
