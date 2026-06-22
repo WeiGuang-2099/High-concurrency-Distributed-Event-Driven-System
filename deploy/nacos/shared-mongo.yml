@@ -1,0 +1,5 @@
+# MongoDB shared configuration for event-store-service
+spring:
+  data:
+    mongodb:
+      uri: mongodb://root:root@mongodb:27017/event_store?authSource=admin

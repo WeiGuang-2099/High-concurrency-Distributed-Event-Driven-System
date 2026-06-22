@@ -82,14 +82,15 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(503, "Service is initializing, please retry");
         }
 
-        String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
+        final String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
+        final int requestedQuantity = request.getQuantity();
 
         List<Object> result;
         try {
             result = (List<Object>) redis.execute(
                     reserveTicketScript,
                     List.of(stockKey),
-                    String.valueOf(request.getQuantity()));
+                    String.valueOf(requestedQuantity));
         } catch (Exception e) {
             log.error("Redis execution failed for stock key={}", stockKey, e);
             throw new BusinessException(500, "Stock service unavailable");
@@ -108,22 +109,36 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(404, "Ticket stock not found");
         }
 
+        // Redis deducted successfully. If the MySQL transaction below fails and rolls back,
+        // we MUST compensate Redis (Spring transactions do not cover Redis operations).
+        // Register a rollback hook BEFORE doing MySQL work so any failure path is covered.
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    log.warn("MySQL tx rolled back after Redis deduction; compensating Redis: key={}, qty={}",
+                            stockKey, requestedQuantity);
+                    rollbackRedis(stockKey, requestedQuantity);
+                }
+            }
+        });
+
         TicketStock stock = stockMapper.findByEventIdAndTicketType(
                 request.getEventId(), request.getTicketType());
         if (stock == null) {
-            rollbackRedis(stockKey, request.getQuantity());
+            // rollbackRedis will be triggered by afterCompletion(ROLLED_BACK) above
             throw new BusinessException(404, "Ticket stock not found");
         }
 
         Reservation reservation = new Reservation();
         reservation.setStockId(stock.getId());
         reservation.setUserId(userId);
-        reservation.setQuantity(request.getQuantity());
+        reservation.setQuantity(requestedQuantity);
         reservation.setStatus(ReservationStatus.PENDING);
         reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
         reservationMapper.insert(reservation);
 
-        stockMapper.incrementReserved(stock.getId(), request.getQuantity());
+        stockMapper.incrementReserved(stock.getId(), requestedQuantity);
 
         final Long reservationId = reservation.getId();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -197,14 +212,16 @@ public class TicketStockServiceImpl implements TicketStockService {
         stockMapper.decrementReserved(reservation.getStockId(), reservation.getQuantity());
 
         if (stock != null) {
-            String stockKey = RedisKeys.stock(stock.getEventId(), stock.getTicketType());
-            rollbackRedis(stockKey, reservation.getQuantity());
-
+            // Only compensate Redis AFTER MySQL commits, otherwise a rollback would
+            // leave Redis with extra stock (over-refund).
+            final TicketStock finalStock = stock;
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
+                    String stockKey = RedisKeys.stock(finalStock.getEventId(), finalStock.getTicketType());
+                    rollbackRedis(stockKey, reservation.getQuantity());
                     eventProducer.publishStockReleased(
-                            reservationId, stock.getEventId(), stock.getTicketType(),
+                            reservationId, finalStock.getEventId(), finalStock.getTicketType(),
                             reservation.getQuantity(), "CANCELLED");
                     log.info("Cancelled reservation id={}, userId={}", reservationId, userId);
                 }

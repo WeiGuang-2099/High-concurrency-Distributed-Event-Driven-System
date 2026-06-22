@@ -11,14 +11,16 @@ import lombok.NoArgsConstructor;
 @EqualsAndHashCode(callSuper = true)
 public class TicketCreatedEvent extends BaseEvent {
 
-    private Long eventId;
+    private Long ticketEventId;
     private String ticketType;
     private int totalQuantity;
 
-    public TicketCreatedEvent(Long eventId, String ticketType, int totalQuantity) {
-        super(String.valueOf(eventId), EventTypes.TICKET_CREATED);
-        this.eventId = eventId;
+    public TicketCreatedEvent(Long ticketEventId, String ticketType, int totalQuantity) {
+        super(String.valueOf(ticketEventId), EventTypes.TICKET_CREATED);
+        this.ticketEventId = ticketEventId;
         this.ticketType = ticketType;
         this.totalQuantity = totalQuantity;
     }
 }
+
+

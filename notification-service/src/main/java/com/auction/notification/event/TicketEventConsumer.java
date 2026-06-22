@@ -53,13 +53,13 @@ public class TicketEventConsumer {
     }
 
     private void handleTicketCreated(TicketCreatedEvent event) {
-        pushService.pushToTicket(event.getEventId(), "created", event);
+        pushService.pushToTicket(event.getTicketEventId(), "created", event);
         log.info("Pushed TicketCreated notification: eventId={} ticketType={}",
-                event.getEventId(), event.getTicketType());
+                event.getTicketEventId(), event.getTicketType());
     }
 
     private void handleStockReserved(StockReservedEvent event) {
-        pushService.pushToTicket(event.getEventId(), "reserved", event);
+        pushService.pushToTicket(event.getTicketEventId(), "reserved", event);
         persistenceService.save(Notification.builder()
                 .userId(event.getUserId())
                 .type("STOCK_RESERVED")
@@ -68,7 +68,7 @@ public class TicketEventConsumer {
                         + " ticket(s) has been created. Reservation ID: " + event.getReservationId())
                 .build());
         log.info("Pushed StockReserved notification: eventId={} reservationId={} userId={}",
-                event.getEventId(), event.getReservationId(), event.getUserId());
+                event.getTicketEventId(), event.getReservationId(), event.getUserId());
     }
 
     private void handleStockConfirmed(StockConfirmedEvent event) {
@@ -84,8 +84,9 @@ public class TicketEventConsumer {
     }
 
     private void handleStockReleased(StockReleasedEvent event) {
-        pushService.pushToTicket(event.getEventId(), "released", event);
+        pushService.pushToTicket(event.getTicketEventId(), "released", event);
         log.info("Pushed StockReleased notification: eventId={} reservationId={}",
-                event.getEventId(), event.getReservationId());
+                event.getTicketEventId(), event.getReservationId());
     }
 }
+

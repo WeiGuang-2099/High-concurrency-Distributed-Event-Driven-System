@@ -1,4 +1,4 @@
-server:
+﻿server:
   port: 8085
 
 spring:
@@ -6,6 +6,17 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+  # Kafka consumer/producer are configured in KafkaConfig.java (StringDeserializer
+  # + JsonMessageConverter). Only bootstrap-servers is taken from shared-kafka.yml.
+  data:
+    mongodb:
+      # Overridden by shared-mongo.yml in Nacos; localhost default for IDE runs
+      uri: mongodb://localhost:27017/event_store
+
+# Event store domain config
+event-store:
+  snapshot:
+    interval: 100
 
 management:
   endpoints:

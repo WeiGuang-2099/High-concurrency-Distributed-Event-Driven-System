@@ -50,7 +50,7 @@ public class NotificationPersistenceService {
     public Notification markAsRead(String notificationId, Long userId) {
         Query query = Query.query(Criteria.where("_id").is(notificationId).and("userId").is(userId));
         Update update = new Update().set("read", true);
-        FindAndModifyOptions options = FindAndModifyOptions.options().returnNew();
+        FindAndModifyOptions options = FindAndModifyOptions.options().returnNew(true);
         Notification notification = mongoTemplate.findAndModify(query, update, options, Notification.class);
         if (notification == null) {
             throw new IllegalArgumentException("Notification not found or not owned by user: " + notificationId);

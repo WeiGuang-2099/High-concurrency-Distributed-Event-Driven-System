@@ -311,7 +311,17 @@ public class OrderServiceImpl implements OrderService {
             try {
                 ticketFeignClient.confirmReservation(order.getReferenceId());
             } catch (Exception e) {
-                log.error("Failed to confirm reservation for order={}", orderId, e);
+                // Stock confirmation failed -- must NOT leave the order as PAID/COMPLETED
+                // while the reservation is still PENDING (data inconsistency). Roll back the
+                // order to PAYING and surface the error so the caller can retry. The payment
+                // record stays PENDING; a reconciliation job (or retry) can resume later.
+                log.error("Failed to confirm reservation for order={}, rolling back order status", orderId, e);
+                orderMapper.compareAndSetStatus(orderId,
+                        OrderStatus.PAID.name(), OrderStatus.PAYING.name());
+                payment.setStatus(PaymentStatus.PENDING);
+                paymentMapper.updateById(payment);
+                throw new BusinessException(500,
+                        "Payment was processed but stock confirmation failed; please retry");
             }
         }
 
