@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS `config_info` (
     `effect` VARCHAR(64),
     `type` VARCHAR(32),
     `c_schema` TEXT,
+    `encrypted_data_key` VARCHAR(256) DEFAULT NULL,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_configinfo_datagrouptenant` (`data_id`, `group_id`, `tenant_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS `his_config_info` (
     `src_ip` VARCHAR(50),
     `op_type` CHAR(10),
     `tenant_id` VARCHAR(128) DEFAULT '',
+    `encrypted_data_key` VARCHAR(256) DEFAULT NULL,
     PRIMARY KEY (`nid`),
     INDEX `idx_gmt_create` (`gmt_create`),
     INDEX `idx_did` (`data_id`)

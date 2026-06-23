@@ -5,6 +5,17 @@ spring:
   application:
     name: seata-server
 
+# Seata Server 必需的日志路径配置（${logging.file.path} 占位符依赖）
+logging:
+  file:
+    path: /seata-server/logs
+
+# Seata Server 1.8.0 控制台账号配置（${console.user.*} 占位符依赖）
+console:
+  user:
+    username: seata
+    password: seata
+
 seata:
   config:
     type: nacos
@@ -45,4 +56,4 @@ seata:
     secretKey: SeataSecretKey0c382ef121d77804315920929adfd13ea24e0f8b
     tokenValidityInMilliseconds: 1800000
     ignore:
-      urls: /,/**/*.css,/**/*.js,/**/*.html,/**/*.map,/**/*.svg,/**/*.png,/**/*.ico,/console-fe/public/**,/api/v1/auth/login
+      urls: /,/**/*.css,/**/*.js,/**/*.html,/**/*.map,/**/*.svg,/**/*.png,/**/*.ico,/console-fe/public/**,/api/v1/auth/login,/health
