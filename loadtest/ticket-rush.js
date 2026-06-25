@@ -34,6 +34,13 @@ const errors     = new Counter('reserve_errors');
 const reserveDur = new Trend('reserve_duration', true);
 
 export const options = {
+  // Resolve the host once and cache forever. Windows' DNS resolver fails ("no such host")
+  // under many concurrent per-request lookups; pinning the cache avoids that entirely.
+  dns: { ttl: '1h', select: 'first', policy: 'preferIPv4' },
+  // Static host override so k6 never invokes the system resolver (Windows' resolver
+  // fails under concurrent lookups when the host is resource-starved). Run with default
+  // BASE_URL=http://localhost:8082 so this mapping applies.
+  hosts: { 'localhost:8082': '127.0.0.1:8082' },
   scenarios: {
     rush: { executor: 'shared-iterations', vus: VUS, iterations: ITERATIONS, maxDuration: '180s' },
   },

@@ -24,4 +24,8 @@ public interface TicketStockMapper extends BaseMapper<TicketStock> {
 
     @Update("UPDATE ticket_stock SET reserved_quantity = reserved_quantity - #{quantity}, version = version + 1 WHERE id = #{id} AND reserved_quantity >= #{quantity}")
     int decrementReserved(@Param("id") Long id, @Param("quantity") int quantity);
+
+    // Pessimistic-lock benchmark variant: locks the stock row for the whole transaction.
+    @Select("SELECT * FROM ticket_stock WHERE event_id = #{eventId} AND ticket_type = #{ticketType} FOR UPDATE")
+    TicketStock findForUpdate(@Param("eventId") Long eventId, @Param("ticketType") String ticketType);
 }

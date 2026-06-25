@@ -60,17 +60,27 @@ changed and consistency held perfectly.
 
 ## Pending
 
-- **Pessimistic-lock comparison** (`SELECT ... FOR UPDATE`, no Redis) at identical parameters, to
-  quantify *why* Redis-Lua is used (throughput / p99 under the same contention). Both approaches prevent
-  oversell; the difference is throughput.
+- **Pessimistic-lock comparison.** The comparison endpoint `POST /api/tickets/reserve-pessimistic`
+  (`SELECT ... FOR UPDATE`, no Redis) is **implemented** and verified for correctness (single request +
+  no oversell). The head-to-head load *run* is **pending a less resource-constrained host**: after the
+  long session the 15.7 GB laptop is memory-saturated, and k6's concurrent connections start failing at
+  the Windows resolver level (`lookup: no such host`) — the same ceiling that 503s the gateway. The
+  earlier Lua runs above succeeded only because the machine still had headroom then. Re-run the two
+  commands below (Lua vs pessimistic) on a fresh boot / bigger host to produce the throughput table.
+  Both approaches prevent oversell; the expected difference is throughput/p99 (pessimistic serializes
+  every reserve on the row lock for the whole transaction; Redis-Lua does the check in memory).
 
 ## Reproduce
 
 ```bash
-# oversell proof
+# oversell proof (Lua)
 k6 run -e STOCK=100   -e ITERATIONS=2000  -e VUS=200 loadtest/ticket-rush.js
-# successful-reserve throughput
+# successful-reserve throughput (Lua)
 k6 run -e STOCK=10000 -e ITERATIONS=10000 -e VUS=200 loadtest/ticket-rush.js
+
+# head-to-head comparison (run on a host with RAM headroom)
+k6 run -e ENDPOINT=/api/tickets/reserve              -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
+k6 run -e ENDPOINT=/api/tickets/reserve-pessimistic  -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
 ```
 
 > Note: this run measured the service in isolation. Running all 7 services + full infra on a 15.7 GB

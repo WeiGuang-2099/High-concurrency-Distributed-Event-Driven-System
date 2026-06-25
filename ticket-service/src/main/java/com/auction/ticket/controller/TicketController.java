@@ -41,6 +41,14 @@ public class TicketController {
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
+    // Benchmark-only: pessimistic-lock variant, for comparison against the Redis-Lua reserve.
+    @PostMapping("/reserve-pessimistic")
+    public ResponseEntity<ApiResponse<ReserveResponse>> reservePessimistic(@Valid @RequestBody ReserveRequest request) {
+        UserContext ctx = UserContextHolder.get();
+        ReserveResponse response = ticketStockService.reservePessimistic(ctx.getUserId(), request);
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
     @PostMapping("/{reservationId}/confirm")
     public ResponseEntity<ApiResponse<Void>> confirm(@PathVariable Long reservationId) {
         UserContext ctx = UserContextHolder.get();

@@ -13,6 +13,8 @@ public interface TicketStockService {
 
     ReserveResponse reserve(Long userId, ReserveRequest request);
 
+    ReserveResponse reservePessimistic(Long userId, ReserveRequest request);
+
     void confirm(Long userId, Long reservationId);
 
     void cancel(Long userId, Long reservationId);

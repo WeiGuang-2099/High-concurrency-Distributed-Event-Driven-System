@@ -286,6 +286,55 @@ public class TicketStockServiceImpl implements TicketStockService {
         return reservation.getId();
     }
 
+    // Benchmark-only variant: pure MySQL with SELECT ... FOR UPDATE (no Redis). Both this and
+    // the Lua reserve() prevent oversell; this one serializes every concurrent reserve on the
+    // stock row's lock for the whole transaction, which is the throughput contrast we measure.
+    @Override
+    @Transactional
+    public ReserveResponse reservePessimistic(Long userId, ReserveRequest request) {
+        final int qty = request.getQuantity();
+        TicketStock stock = stockMapper.findForUpdate(request.getEventId(), request.getTicketType());
+        if (stock == null) {
+            throw new BusinessException(404, "Ticket stock not found");
+        }
+        int available = stock.getTotalQuantity() - stock.getReservedQuantity() - stock.getSoldQuantity();
+        if (available < qty) {
+            throw new BusinessException(400, "Out of stock");
+        }
+
+        Reservation reservation = new Reservation();
+        reservation.setStockId(stock.getId());
+        reservation.setUserId(userId);
+        reservation.setQuantity(qty);
+        reservation.setStatus(ReservationStatus.PENDING);
+        reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
+        reservationMapper.insert(reservation);
+        stockMapper.incrementReserved(stock.getId(), qty);
+
+        final Long reservationId = reservation.getId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventProducer.publishStockReserved(
+                        request.getEventId(), request.getTicketType(), reservationId, userId, qty);
+                rabbitTemplate.convertAndSend(
+                        RabbitMQConfig.DELAY_EXCHANGE, RabbitMQConfig.STOCK_RELEASE_ROUTING_KEY, reservationId,
+                        msg -> {
+                            msg.getMessageProperties().setDelay(RESERVATION_TIMEOUT_MINUTES * 60 * 1000);
+                            return msg;
+                        });
+            }
+        });
+
+        return ReserveResponse.builder()
+                .reservationId(reservationId)
+                .eventId(request.getEventId())
+                .ticketType(request.getTicketType())
+                .quantity(qty)
+                .expireAt(reservation.getExpireAt())
+                .build();
+    }
+
     @SuppressWarnings("unchecked")
     private void rollbackRedis(String stockKey, int quantity) {
         try {
