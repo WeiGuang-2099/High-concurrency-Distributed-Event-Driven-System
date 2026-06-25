@@ -1,6 +1,7 @@
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://mysql:3306/${DB_NAME}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    # URL is set per-service in each service's application.yml (different DB name,
+    # localhost on the host). Shared config carries only credentials + driver.
     username: root
     password: root

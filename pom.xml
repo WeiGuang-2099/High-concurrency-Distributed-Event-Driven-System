@@ -96,6 +96,17 @@
         </dependencies>
     </dependencyManagement>
 
+    <!-- Dependencies inherited by ALL modules. Every service is a Nacos client and
+         relies on bootstrap.yml for shared config. Spring Cloud 2020+ only processes
+         bootstrap.yml when spring-cloud-starter-bootstrap is on the classpath; without
+         it the apps fail to start with "No spring.config.import property has been defined". -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bootstrap</artifactId>
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
             <plugin>
