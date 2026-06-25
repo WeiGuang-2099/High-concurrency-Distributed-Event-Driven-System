@@ -90,3 +90,6 @@ nul
 .cursor/
 .copilot/
 .aider*
+
+# Superpowers process docs (specs/plans) - keep local only, do not publish
+docs/superpowers/
