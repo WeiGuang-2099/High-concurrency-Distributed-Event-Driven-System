@@ -8,10 +8,38 @@ test (no gateway, JWT, or other JVMs competing for CPU) — the correct setup fo
 
 - Single Windows laptop, 15.7 GB RAM. ticket-service runs **in isolation** + infra in Docker.
   (The full 7-service mesh needs ~16 GB+ to stay stable; see note at the bottom.)
-- ticket-service: Java 21, Spring Boot 3.2.5, Tomcat (default 200 worker threads), HikariCP (default pool).
+- ticket-service: Java 21, Spring Boot 3.2.5, Tomcat, HikariCP (default pool).
 - Infra (Docker): MySQL 8, Redis 7, Kafka (KRaft), RabbitMQ.
 - Reserve path under test: **Redis Lua** atomic check+decrement → **MySQL** (insert reservation +
   `UPDATE ... reserved_quantity+1` on the stock row) → afterCommit: Kafka event + RabbitMQ delayed message.
+
+### Launching ticket-service for the benchmark
+
+Start the service in isolation with these JVM/Spring overrides (required on Windows — see
+"Required flags" below):
+
+```bash
+java -jar ticket-service/target/ticket-service-1.0.0-SNAPSHOT.jar \
+  --seata.enabled=false \
+  --server.tomcat.accept-count=1000 \
+  --server.tomcat.max-connections=4096 \
+  --server.tomcat.threads.max=300
+```
+
+**Required flags (why):**
+
+- `--server.tomcat.accept-count=1000` — **the one that actually matters.** Tomcat's default
+  accept-count (the OS listen backlog) is **100**, which is smaller than the 200-VU connection
+  burst. k6 opens all VU connections near-simultaneously; the backlog overflows and Windows
+  RSTs the excess, which k6 reports as `connectex: ... actively refused`. With `shared-iterations`,
+  each refused connection fails its iteration and the VU immediately retries, so a small initial
+  overflow cascades into a near-total failure. Single-/low-VU runs are unaffected. Raising the
+  backlog past the VU count eliminates the refusals entirely.
+- `--seata.enabled=false` — the Seata server (in Docker) registers its **container-internal IP**
+  (e.g. `172.26.0.8:8091`) to Nacos, which the host JVM cannot reach, producing a per-second
+  reconnect error storm. The reserve path uses a plain local `@Transactional` (not
+  `@GlobalTransactional`), so Seata is pure noise here. Disabling it removes the log spam and
+  ~22 s of startup time; it was **not** the cause of the connection refusals.
 
 ## Scenario 1 — Oversell correctness under contention
 
@@ -36,17 +64,21 @@ reserved count. Zero oversell under 200 concurrent buyers.
 
 | metric | value |
 |---|---|
-| reserve_success | 9437 |
-| throughput | ~283 req/s (sustained, all-success path) |
-| latency | p95 = 860 ms, p99 = 1.05 s |
-| final stock | reserved=9437, available=563 |
-| **oversell check** | **PASS** — reserved+sold (9437) ≤ total (10000) |
-| connection-level failures | 563 (5.6%) |
+| reserve_success | **10000 / 10000** |
+| reserve_errors (5xx) | **0** |
+| http_req_failed | **0.00%** (0 / 10002) |
+| throughput | ~261 req/s (sustained, all-success path) |
+| latency | p95 = 903 ms, p99 = 1.17 s |
+| final stock | reserved=10000, available=0 |
+| **oversell check** | **PASS** — reserved+sold (10000) ≤ total (10000) |
 
-The 563 failures were **client/socket-level** (Tomcat's 200-thread pool + everything co-located on one
-laptop), not server errors: there were **zero** Redis-compensation log lines, and
-`reserved (9437) + available (563) = 10000` exactly — the server never processed those 563, so no state
-changed and consistency held perfectly.
+**All 10000 reserves succeeded with zero socket-level failures.** (An earlier run on the default Tomcat
+backlog lost 563 requests to connection refusals — that was the `accept-count` issue documented above,
+not a server fault; raising the backlog eliminated it.) p95 = 903 ms exceeds the 800 ms threshold here:
+that threshold is calibrated for the oversell scenario, where ~95% of requests are fast out-of-stock
+rejections; on this all-success path every request runs the full MySQL insert + hot-row `UPDATE` +
+synchronous RabbitMQ send, so higher latency is expected. Correctness (zero oversell, zero errors,
+10000/10000 reserved) is unaffected.
 
 ## Key findings
 
@@ -57,20 +89,36 @@ changed and consistency held perfectly.
 - The throughput ceiling on this hardware is gated by the **MySQL success path** (row insert + hot-row
   `UPDATE` + synchronous RabbitMQ send in `afterCommit`), not by the Redis check. This is the natural
   next optimization target.
+- **Optimistic (Redis-Lua) beats pessimistic (`SELECT ... FOR UPDATE`) by ~1.5x throughput** at equal
+  correctness (Scenario 3): moving the contention check into Redis shortens how long each request holds
+  the MySQL row lock.
 
-## Pending
+## Scenario 3 — Optimistic (Redis-Lua) vs Pessimistic-lock head-to-head
 
-- **Pessimistic-lock comparison.** The comparison endpoint `POST /api/tickets/reserve-pessimistic`
-  (`SELECT ... FOR UPDATE`, no Redis) is **implemented** and verified for correctness (single request +
-  no oversell). The head-to-head load *run* is **pending a less resource-constrained host**: after the
-  long session the 15.7 GB laptop is memory-saturated, and k6's concurrent connections start failing at
-  the Windows resolver level (`lookup: no such host`) — the same ceiling that 503s the gateway. The
-  earlier Lua runs above succeeded only because the machine still had headroom then. Re-run the two
-  commands below (Lua vs pessimistic) on a fresh boot / bigger host to produce the throughput table.
-  Both approaches prevent oversell; the expected difference is throughput/p99 (pessimistic serializes
-  every reserve on the row lock for the whole transaction; Redis-Lua does the check in memory).
+`STOCK=8000, ITERATIONS=8000, VUS=50` for both, all-success path. `POST /api/tickets/reserve` (Redis-Lua
+atomic check + local `@Transactional`) vs `POST /api/tickets/reserve-pessimistic` (`SELECT ... FOR UPDATE`
+on the stock row, no Redis).
+
+| metric | Redis-Lua (optimistic) | `SELECT ... FOR UPDATE` (pessimistic) |
+|---|---|---|
+| reserve_success | 8000 / 8000 | 8000 / 8000 |
+| reserve_errors (5xx) | 0 | 0 |
+| **throughput** | **~282 req/s** | **~185 req/s** |
+| latency p95 | 218 ms | 332 ms |
+| latency p99 | 243 ms | 385 ms |
+| latency avg / max | 176 ms / 268 ms | 269 ms / 598 ms |
+| **oversell check** | **PASS** | **PASS** |
+
+**Both prevent oversell; Redis-Lua delivers ~1.5x the throughput at lower latency.** The pessimistic
+variant serializes every reserve on the row lock for the *whole* transaction (lock held across the insert
++ update + commit), so concurrent buyers queue behind the lock. Redis-Lua does the contention check
+atomically in memory and only touches MySQL for the (still row-contended but shorter) write, so the lock
+is held for less of each request — hence higher throughput and a tighter latency tail.
 
 ## Reproduce
+
+First start infra (Docker) and launch ticket-service **with the required flags** from
+"Launching ticket-service for the benchmark" above. Then (k6 v2.0.0; `winget install GrafanaLabs.k6`):
 
 ```bash
 # oversell proof (Lua)
@@ -78,10 +126,15 @@ k6 run -e STOCK=100   -e ITERATIONS=2000  -e VUS=200 loadtest/ticket-rush.js
 # successful-reserve throughput (Lua)
 k6 run -e STOCK=10000 -e ITERATIONS=10000 -e VUS=200 loadtest/ticket-rush.js
 
-# head-to-head comparison (run on a host with RAM headroom)
+# head-to-head comparison: optimistic Redis-Lua vs pessimistic SELECT ... FOR UPDATE
 k6 run -e ENDPOINT=/api/tickets/reserve              -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
 k6 run -e ENDPOINT=/api/tickets/reserve-pessimistic  -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
 ```
+
+> All four runs above were re-verified on 2026-06-26 (k6 v2.0.0) — zero oversell, zero `reserve_errors`
+> on every run. Note k6's `http_req_failed` is high on the oversell run only because it counts the
+> out-of-stock **400**s (an expected business rejection) as non-2xx; the script's own `reserve_errors`
+> counter (5xx / unexpected only) is the meaningful error metric.
 
 > Note: this run measured the service in isolation. Running all 7 services + full infra on a 15.7 GB
 > machine exhausts RAM (free ~1.4 GB), which destabilizes the gateway's Nacos/Redis connections — so
