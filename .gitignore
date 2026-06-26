@@ -93,3 +93,6 @@ nul
 
 # Superpowers process docs (specs/plans) - keep local only, do not publish
 docs/superpowers/
+
+# Internal PRD / planning docs - keep local only, do not publish
+tasks/

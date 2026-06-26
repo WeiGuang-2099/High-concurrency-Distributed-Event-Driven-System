@@ -2,6 +2,8 @@
 
 A real-time auction and ticketing platform built with a distributed event-driven architecture. The system handles two high-concurrency scenarios: **flash auctions** (thousands of users bidding simultaneously) and **ticket rushes** (thousands of users buying limited stock). Both scenarios are protected against overselling and data races using Redis Lua scripts, MySQL optimistic locking, and transactional compensation.
 
+> **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), and a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency. See [Performance & Load Testing](#performance--load-testing).
+
 ## Tech Stack
 
 | Layer | Technology | Role in this project |
@@ -145,6 +147,19 @@ The `event-store-service` maintains an append-only event log in MongoDB:
 - **Projection consumers** (separate consumer groups) build materialized views: bid history, order timeline, stock movement log, auction summary.
 - **Snapshot + Replay**: every 100 events per aggregate, a snapshot is stored. The `/api/admin/events/replay/{aggregateType}/{aggregateId}` endpoint reconstructs aggregate state from the latest snapshot plus subsequent events.
 - **Query API** (`/api/event-store/*`) reads exclusively from projections, never touching the write-side event stream.
+
+## Performance & Load Testing
+
+The flash-sale (ticket reserve) path is load-tested with [k6](https://k6.io). Tests hit `ticket-service` **in isolation** on a single laptop (Java 21, Tomcat, HikariCP) with MySQL / Redis / Kafka / RabbitMQ in Docker — isolating the service under test from gateway, JWT, and other JVMs is the correct setup for a benchmark. **Full methodology, environment, and raw metrics: [loadtest/REPORT.md](loadtest/REPORT.md).**
+
+| Scenario | Setup | Result |
+|----------|-------|--------|
+| **Oversell correctness** | 200 concurrent VUs · 2,000 reserve attempts on 100 stock | **Exactly 100 sold, 0 oversold, 0 server errors** · p99 683 ms · ~921 req/s |
+| **Sustained throughput** | 200 VUs · 10,000 reserves on one hot stock row | **10,000 / 10,000 succeeded, 0 oversold** · ~261 req/s · p99 1.17 s |
+| **Optimistic vs pessimistic** | 50 VUs · 8,000 reserves · Redis-Lua vs `SELECT … FOR UPDATE` | **Redis-Lua ~282 req/s vs pessimistic ~185 req/s (~1.5x)** · both 0 oversold |
+
+- **Oversell is verified by a post-run invariant** (`reserved + sold ≤ total`), not assumed — and the Redis decrement count always matches MySQL's `reserved_quantity`, so the two stores never diverge under saturation.
+- **The optimistic/pessimistic comparison quantifies a design tradeoff:** moving the contention check into a Redis Lua script shortens how long each request holds the MySQL row lock, yielding ~1.5x throughput over `SELECT … FOR UPDATE` at equal correctness.
 
 ## Getting Started
 
@@ -303,10 +318,19 @@ Real-time notifications are pushed via WebSocket (STOMP) at `ws://localhost:8084
 mvn test
 ```
 
+### Load Tests (k6)
+
+The ticket-rush flash-sale path is benchmarked end-to-end with k6 — **zero oversell under 200 concurrent VUs**, plus an optimistic-vs-pessimistic throughput comparison. Headline numbers are in [Performance & Load Testing](#performance--load-testing); full report in [loadtest/REPORT.md](loadtest/REPORT.md).
+
+```bash
+# oversell proof: 2,000 concurrent reserve attempts on 100 stock
+k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
+```
+
 ### Not Yet Implemented
 
 - Integration tests with Testcontainers (Kafka E2E, Seata TX commit/rollback, Redis Lua concurrency)
-- K6 load tests (flash auction 1000 concurrent bidders, ticket rush 5000 concurrent buyers)
+- k6 load test for the auction-bid path (the ticket-reserve path is done — see above)
 
 ## Current Status
 
@@ -320,7 +344,7 @@ mvn test
 | P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
 | P7 | Observability (structured logging, Sentinel rate limiting, Kibana dashboards) | Infrastructure containers running; service-side logback/Sentinel config not yet implemented |
-| P8 | Testing (unit, integration, K6 load tests) | 86 unit tests done; integration and load tests pending |
+| P8 | Testing (unit, integration, K6 load tests) | 86 unit tests + k6 ticket-rush load tests done (zero oversell verified, optimistic-vs-pessimistic benchmarked); integration tests and auction-bid load test pending |
 | P9 | README, architecture diagrams, demo guide | This README; diagrams and demo guide pending |
 
 ## Default Credentials
