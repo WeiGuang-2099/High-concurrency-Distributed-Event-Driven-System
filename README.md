@@ -198,10 +198,14 @@ java -jar gateway-service/target/gateway-service-1.0.0-SNAPSHOT.jar
 ### Observability
 
 Every service is instrumented with **Micrometer Tracing + Brave**. Each request gets a
-trace id that propagates across the gateway and all Feign calls (B3 headers), is reported
-to **Zipkin** as a span tree, and is injected into the SLF4J MDC — so the **same trace id**
-appears in both the Zipkin trace and the structured logs. The gateway also echoes it to the
-client as the `X-Trace-Id` response header.
+trace id that propagates across the gateway and all Feign calls (B3 headers) and is reported
+to **Zipkin** as a span tree. In the servlet services the trace id is also injected into the
+SLF4J MDC, so the **same trace id** appears in both the Zipkin trace and the structured logs
+(grab a trace id from Zipkin, search it in Kibana to see that request's logs across services).
+
+> Note: the gateway is reactive (Spring Cloud Gateway / WebFlux), where the trace context
+> lives in the Reactor context rather than a thread-local. It still creates and reports spans
+> to Zipkin and propagates B3 downstream, but its own log lines do not carry the MDC trace id.
 
 Logs are JSON via a shared `logback-spring.xml` (in `auction-common`, inherited by all
 services). To ship them to ELK, start the services with the `elk` profile so the Logstash
