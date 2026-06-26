@@ -12,4 +12,7 @@ public interface TicketFeignClient {
 
     @PostMapping("/internal/settle-reserve")
     ApiResponse<Map<String, Object>> settleReserve(@RequestBody Map<String, Object> body);
+
+    @PostMapping("/internal/settle-release")
+    ApiResponse<Void> settleRelease(@RequestBody Map<String, Object> body);
 }

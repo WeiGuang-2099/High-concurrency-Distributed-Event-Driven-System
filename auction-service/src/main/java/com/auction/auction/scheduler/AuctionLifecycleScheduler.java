@@ -94,7 +94,7 @@ public class AuctionLifecycleScheduler {
                             auction.getId(), highest.getUserId(),
                             highest.getAmount(), auction.getTicketTypeId());
                 } catch (Exception e) {
-                    log.error("Seata settlement failed for auction={}, rolling back auction status",
+                    log.error("Settlement saga failed for auction={}, reverting auction to ACTIVE for retry",
                             auction.getId(), e);
                     auctionMapper.markActive(auction.getId());
                     redis.opsForValue().set(RedisKeys.auctionStatus(auction.getId()), "ACTIVE");

@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.kafka.annotation.EnableKafka;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.auction")
 @EnableDiscoveryClient
 @EnableKafka
 public class EventStoreServiceApplication {

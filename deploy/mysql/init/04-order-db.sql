@@ -36,16 +36,3 @@ CREATE TABLE IF NOT EXISTS `idempotency_log` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_idempotency_key` (`idempotency_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Seata AT undo_log table
-CREATE TABLE IF NOT EXISTS `undo_log` (
-    `branch_id` BIGINT NOT NULL,
-    `xid` VARCHAR(100) NOT NULL,
-    `context` VARCHAR(128) NOT NULL,
-    `rollback_info` LONGBLOB NOT NULL,
-    `log_status` INT NOT NULL,
-    `log_created` DATETIME NOT NULL,
-    `log_modified` DATETIME NOT NULL,
-    PRIMARY KEY (`branch_id`),
-    INDEX `idx_xid` (`xid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

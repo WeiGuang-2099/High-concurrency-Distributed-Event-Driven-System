@@ -17,7 +17,7 @@ A real-time auction and ticketing platform built with a distributed event-driven
 | **Relational DB** | MySQL 8.0 + MyBatis-Plus 3.5.6 | Transactional data (users, auctions, tickets, orders) |
 | **In-Memory Store** | Redis 7 | Atomic stock deduction (Lua), atomic bid validation (Lua), token blacklist, hot-auction cache |
 | **Document DB** | MongoDB 7 | Event sourcing store, CQRS read-side projections |
-| **Distributed Transactions** | Seata 1.8.0 (AT mode) | Cross-service transactional consistency for auction settlement |
+| **Distributed Transactions** | Application-level compensation saga | Cross-service consistency for auction settlement (reserve stock + create order, with compensation + retry on failure) |
 | **Observability** | ELK 8.12, Zipkin | Log aggregation, distributed tracing |
 | **Frontend** | React 18, TypeScript, Ant Design 5, React Query, Zustand | SPA with real-time WebSocket notifications |
 
@@ -59,7 +59,7 @@ A real-time auction and ticketing platform built with a distributed event-driven
     ┌─────────────────────────────────────────────────────────┐
     │                    Data Stores                           │
     │  MySQL 8 (5 DBs)  ·  Redis 7  ·  MongoDB 7              │
-    │  RabbitMQ 3 (delayed msg)  ·  Seata Server 1.8          │
+    │  RabbitMQ 3 (delayed msg)                                │
     └─────────────────────────────────────────────────────────┘
 ```
 
@@ -99,7 +99,8 @@ User → Gateway → Auction Service
 Scheduler (every 1s):
   ├─ Activate auctions whose startTime has passed (PENDING → ACTIVE)
   └─ Settle auctions whose endTime has passed (ACTIVE → SETTLED)
-        ├─ If highest bid exists → Seata global TX: reserve stock + create order
+        ├─ If highest bid exists → settlement saga: reserve stock, then create order;
+        │     if order creation fails, compensate (release stock) and retry next tick
         └─ If no bids → mark EXPIRED
 ```
 
@@ -110,14 +111,14 @@ Scheduler (every 1s):
 ├── auction-common/            # Shared DTOs, event classes, exception handling, security context
 ├── gateway-service/           # API gateway: routing, JWT verification (RSA public key), traceId filter
 ├── user-service/              # User registration, login (RSA-signed JWT), profile management
-├── auction-service/           # Auction CRUD, atomic bidding (Lua), lifecycle scheduler, Seata settlement
+├── auction-service/           # Auction CRUD, atomic bidding (Lua), lifecycle scheduler, settlement saga
 ├── ticket-service/            # Stock management, atomic reserve/confirm/cancel (Lua), timeout handling
 ├── order-service/             # Order state machine, mock payment, CAS status transitions, timeout expiry
 ├── notification-service/      # Kafka event consumers, WebSocket (STOMP) push, notification persistence
 ├── event-store-service/       # MongoDB event sourcing, CQRS projections, snapshot + replay API
 ├── frontend/                  # React 18 + TypeScript SPA (Ant Design, React Query, WebSocket)
-├── deploy/                    # MySQL init scripts, Nacos configs, Seata config, Logstash pipeline
-└── docker-compose.yml         # All infrastructure: MySQL, Redis, MongoDB, Kafka, RabbitMQ, Nacos, Seata, ELK, Zipkin
+├── deploy/                    # MySQL init scripts, Nacos configs, Logstash pipeline
+└── docker-compose.yml         # All infrastructure: MySQL, Redis, MongoDB, Kafka, RabbitMQ, Nacos, ELK, Zipkin
 ```
 
 ## Core Technical Highlights
@@ -176,7 +177,7 @@ The flash-sale (ticket reserve) path is load-tested with [k6](https://k6.io). Te
 docker-compose up -d
 ```
 
-This starts 12 containers: MySQL, Redis, MongoDB, Kafka (KRaft), RabbitMQ, Nacos, Seata Server, Zipkin, Elasticsearch, Logstash, Kibana. Wait ~2 minutes for all health checks to pass.
+This starts 11 containers: MySQL, Redis, MongoDB, Kafka (KRaft), RabbitMQ, Nacos, Zipkin, Elasticsearch, Logstash, Kibana. Wait ~2 minutes for all health checks to pass.
 
 ### Build and Run Services
 
@@ -209,7 +210,6 @@ npm run dev
 | Frontend | http://localhost:5173 |
 | API Gateway | http://localhost:8080 |
 | Nacos Console | http://localhost:8848/nacos |
-| Seata Console | http://localhost:7091 |
 | Zipkin UI | http://localhost:9411 |
 | Kibana | http://localhost:5601 |
 | RabbitMQ Management | http://localhost:15672 (guest/guest) |
@@ -329,7 +329,7 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 
 ### Not Yet Implemented
 
-- Integration tests with Testcontainers (Kafka E2E, Seata TX commit/rollback, Redis Lua concurrency)
+- Integration tests with Testcontainers (Kafka E2E, settlement saga compensation/retry, Redis Lua concurrency)
 - k6 load test for the auction-bid path (the ticket-reserve path is done — see above)
 
 ## Current Status
@@ -340,7 +340,7 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 | P1 | User service (registration, JWT auth) | Done |
 | P2 | Auction service (CRUD, atomic bidding, lifecycle scheduler) | Done |
 | P3 | Ticket service (Lua stock deduction, reserve/confirm/cancel) | Done |
-| P4 | Order service (state machine, payment, Seata distributed TX) | Done |
+| P4 | Order service (state machine, payment, settlement compensation saga) | Done |
 | P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
 | P7 | Observability (structured logging, Sentinel rate limiting, Kibana dashboards) | Infrastructure containers running; service-side logback/Sentinel config not yet implemented |
@@ -357,4 +357,3 @@ All credentials below are demo defaults for local development only:
 | MongoDB | root | root |
 | RabbitMQ | guest | guest |
 | Nacos | (auth disabled) | - |
-| Seata Console | seata | seata |

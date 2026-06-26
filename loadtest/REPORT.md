@@ -20,7 +20,6 @@ Start the service in isolation with these JVM/Spring overrides (required on Wind
 
 ```bash
 java -jar ticket-service/target/ticket-service-1.0.0-SNAPSHOT.jar \
-  --seata.enabled=false \
   --server.tomcat.accept-count=1000 \
   --server.tomcat.max-connections=4096 \
   --server.tomcat.threads.max=300
@@ -35,11 +34,6 @@ java -jar ticket-service/target/ticket-service-1.0.0-SNAPSHOT.jar \
   each refused connection fails its iteration and the VU immediately retries, so a small initial
   overflow cascades into a near-total failure. Single-/low-VU runs are unaffected. Raising the
   backlog past the VU count eliminates the refusals entirely.
-- `--seata.enabled=false` — the Seata server (in Docker) registers its **container-internal IP**
-  (e.g. `172.26.0.8:8091`) to Nacos, which the host JVM cannot reach, producing a per-second
-  reconnect error storm. The reserve path uses a plain local `@Transactional` (not
-  `@GlobalTransactional`), so Seata is pure noise here. Disabling it removes the log spam and
-  ~22 s of startup time; it was **not** the cause of the connection refusals.
 
 ## Scenario 1 — Oversell correctness under contention
 

@@ -33,9 +33,14 @@
             <artifactId>feign-core</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- Web types used by the shared GlobalExceptionHandler / UserContextFilter
+             (ResponseEntity, RestControllerAdvice, OncePerRequestFilter). Declared
+             explicitly and provided so it is not propagated to reactive consumers
+             (e.g. the WebFlux gateway); each servlet service brings its own via
+             spring-boot-starter-web. -->
         <dependency>
-            <groupId>io.seata</groupId>
-            <artifactId>seata-all</artifactId>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>

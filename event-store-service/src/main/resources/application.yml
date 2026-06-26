@@ -11,7 +11,7 @@ spring:
   data:
     mongodb:
       # Overridden by shared-mongo.yml in Nacos; localhost default for IDE runs
-      uri: mongodb://localhost:27017/event_store
+      uri: mongodb://root:root@localhost:27017/event_store?authSource=admin
 
 # Event store domain config
 event-store:

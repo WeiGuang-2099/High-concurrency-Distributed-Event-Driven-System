@@ -24,7 +24,6 @@
         <spring-cloud.version>2023.0.1</spring-cloud.version>
         <spring-cloud-alibaba.version>2022.0.0.0</spring-cloud-alibaba.version>
         <mybatis-plus.version>3.5.6</mybatis-plus.version>
-        <seata.version>1.8.0</seata.version>
         <lombok.version>1.18.30</lombok.version>
         <nimbus-jose-jwt.version>9.37.3</nimbus-jose-jwt.version>
     </properties>
@@ -72,19 +71,6 @@
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
-            </dependency>
-
-            <!-- Seata -->
-            <dependency>
-                <groupId>com.alibaba.cloud</groupId>
-                <artifactId>spring-cloud-starter-alibaba-seata</artifactId>
-                <version>${spring-cloud-alibaba.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>io.seata</groupId>
-                <artifactId>seata-all</artifactId>
-                <version>${seata.version}</version>
             </dependency>
 
             <!-- Nimbus JOSE JWT -->

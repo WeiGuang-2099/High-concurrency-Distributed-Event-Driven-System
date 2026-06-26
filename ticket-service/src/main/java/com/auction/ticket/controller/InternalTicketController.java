@@ -34,4 +34,11 @@ public class InternalTicketController {
         result.put("reservationId", reservationId);
         return ResponseEntity.ok(ApiResponse.success(result));
     }
+
+    @PostMapping("/settle-release")
+    public ResponseEntity<ApiResponse<Void>> settleRelease(@RequestBody Map<String, Object> body) {
+        Long reservationId = Long.parseLong(body.get("reservationId").toString());
+        ticketStockService.settleRelease(reservationId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
 }

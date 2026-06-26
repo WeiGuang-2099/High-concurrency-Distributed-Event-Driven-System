@@ -152,29 +152,6 @@ services:
     networks:
       - auction-network
 
-  seata-server:
-    image: seataio/seata-server:1.8.0
-    container_name: auction-seata
-    ports:
-      - "7091:7091"
-      - "8091:8091"
-    volumes:
-      - ./deploy/seata/application.yml:/seata-server/resources/application.yml
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:7091/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    mem_limit: 512m
-    depends_on:
-      mysql:
-        condition: service_healthy
-      nacos:
-        condition: service_healthy
-    networks:
-      - auction-network
-
   zipkin:
     image: openzipkin/zipkin:latest
     container_name: auction-zipkin

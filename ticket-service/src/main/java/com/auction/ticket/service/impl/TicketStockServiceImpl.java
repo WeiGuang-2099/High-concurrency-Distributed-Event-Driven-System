@@ -286,6 +286,34 @@ public class TicketStockServiceImpl implements TicketStockService {
         return reservation.getId();
     }
 
+    /**
+     * Compensation for {@link #settleReserve}: releases a settlement reservation when the
+     * downstream order creation failed. This is MySQL-only on purpose -- settleReserve never
+     * touched Redis (it is a pure MySQL reserve), so compensating Redis here would over-refund
+     * stock. Idempotent via {@code updateStatusIfPending}: a reservation that is already
+     * CANCELLED/CONFIRMED is a no-op, so the saga can retry the release safely.
+     */
+    @Override
+    @Transactional
+    public void settleRelease(Long reservationId) {
+        Reservation reservation = reservationMapper.findById(reservationId);
+        if (reservation == null) {
+            log.warn("settleRelease: reservation not found, treating as released: id={}", reservationId);
+            return;
+        }
+
+        int rows = reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CANCELLED.name());
+        if (rows == 0) {
+            log.info("settleRelease: reservation not PENDING, nothing to release: id={}, status={}",
+                    reservationId, reservation.getStatus());
+            return;
+        }
+
+        stockMapper.decrementReserved(reservation.getStockId(), reservation.getQuantity());
+        log.info("Settle-released reservation id={}, stockId={}, qty={}",
+                reservationId, reservation.getStockId(), reservation.getQuantity());
+    }
+
     // Benchmark-only variant: pure MySQL with SELECT ... FOR UPDATE (no Redis). Both this and
     // the Lua reserve() prevent oversell; this one serializes every concurrent reserve on the
     // stock row's lock for the whole transaction, which is the throughput contrast we measure.

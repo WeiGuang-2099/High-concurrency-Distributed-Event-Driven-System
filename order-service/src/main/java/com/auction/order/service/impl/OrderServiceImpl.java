@@ -93,6 +93,18 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public OrderResponse createFromAuction(Long auctionId, Long winnerId, BigDecimal amount) {
+        // Idempotent: settlement is a saga that the auction scheduler may retry, so a second
+        // call for the same auction must return the existing order rather than duplicate it.
+        Order existing = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                .eq(Order::getType, OrderType.AUCTION)
+                .eq(Order::getReferenceId, auctionId)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            log.info("Auction order already exists, returning it: auctionId={}, orderId={}",
+                    auctionId, existing.getId());
+            return toResponse(existing);
+        }
+
         Order order = new Order();
         order.setUserId(winnerId);
         order.setType(OrderType.AUCTION);

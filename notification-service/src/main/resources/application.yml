@@ -8,7 +8,7 @@ spring:
         server-addr: localhost:8848
   data:
     mongodb:
-      uri: mongodb://localhost:27017/notification_db
+      uri: mongodb://root:root@localhost:27017/notification_db?authSource=admin
   kafka:
     bootstrap-servers: localhost:9092
     consumer:

@@ -22,4 +22,6 @@ public interface TicketStockService {
     TicketStockResponse createTicketStock(CreateTicketRequest request);
 
     Long settleReserve(Long ticketTypeId, Long userId, int quantity);
+
+    void settleRelease(Long reservationId);
 }
