@@ -11,3 +11,5 @@ spring:
             refresh: true
           - data-id: shared-jwt.yml
             refresh: true
+          - data-id: shared-observability.yml
+            refresh: true

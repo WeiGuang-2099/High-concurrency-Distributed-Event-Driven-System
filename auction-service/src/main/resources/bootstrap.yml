@@ -13,3 +13,5 @@ spring:
             refresh: true
           - data-id: shared-kafka.yml
             refresh: true
+          - data-id: shared-observability.yml
+            refresh: true

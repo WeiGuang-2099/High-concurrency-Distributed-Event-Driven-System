@@ -18,7 +18,7 @@ A real-time auction and ticketing platform built with a distributed event-driven
 | **In-Memory Store** | Redis 7 | Atomic stock deduction (Lua), atomic bid validation (Lua), token blacklist, hot-auction cache |
 | **Document DB** | MongoDB 7 | Event sourcing store, CQRS read-side projections |
 | **Distributed Transactions** | Application-level compensation saga | Cross-service consistency for auction settlement (reserve stock + create order, with compensation + retry on failure) |
-| **Observability** | ELK 8.12, Zipkin | Log aggregation, distributed tracing |
+| **Observability** | Micrometer Tracing + Brave, Zipkin, ELK 8.12 | Distributed tracing (one trace id shared by Zipkin spans and Kibana logs), structured JSON log aggregation |
 | **Frontend** | React 18, TypeScript, Ant Design 5, React Query, Zustand | SPA with real-time WebSocket notifications |
 
 ## Architecture
@@ -195,6 +195,26 @@ java -jar event-store-service/target/event-store-service-1.0.0-SNAPSHOT.jar
 java -jar gateway-service/target/gateway-service-1.0.0-SNAPSHOT.jar
 ```
 
+### Observability
+
+Every service is instrumented with **Micrometer Tracing + Brave**. Each request gets a
+trace id that propagates across the gateway and all Feign calls (B3 headers), is reported
+to **Zipkin** as a span tree, and is injected into the SLF4J MDC — so the **same trace id**
+appears in both the Zipkin trace and the structured logs. The gateway also echoes it to the
+client as the `X-Trace-Id` response header.
+
+Logs are JSON via a shared `logback-spring.xml` (in `auction-common`, inherited by all
+services). To ship them to ELK, start the services with the `elk` profile so the Logstash
+appender is active (Logstash → Elasticsearch `auction-logs-*` → Kibana):
+
+```bash
+java -jar user-service/target/user-service-1.0.0-SNAPSHOT.jar --spring.profiles.active=elk
+```
+
+Without the profile, logs stay on the console (so a missing Logstash never spams reconnect
+errors). The tracing endpoint and sampling live in Nacos `shared-observability.yml`
+(published by `deploy/nacos/import-configs.ps1`).
+
 ### Run Frontend
 
 ```bash
@@ -343,7 +363,7 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 | P4 | Order service (state machine, payment, settlement compensation saga) | Done |
 | P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
-| P7 | Observability (structured logging, Sentinel rate limiting, Kibana dashboards) | Infrastructure containers running; service-side logback/Sentinel config not yet implemented |
+| P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing and structured JSON logging to ELK done; Sentinel rate limiting + Kibana dashboards pending |
 | P8 | Testing (unit, integration, K6 load tests) | 86 unit tests + k6 ticket-rush load tests done (zero oversell verified, optimistic-vs-pessimistic benchmarked); integration tests and auction-bid load test pending |
 | P9 | README, architecture diagrams, demo guide | This README; diagrams and demo guide pending |
 

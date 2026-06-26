@@ -26,6 +26,8 @@
         <mybatis-plus.version>3.5.6</mybatis-plus.version>
         <lombok.version>1.18.30</lombok.version>
         <nimbus-jose-jwt.version>9.37.3</nimbus-jose-jwt.version>
+        <!-- Not managed by the Spring Boot BOM; micrometer-tracing / zipkin-reporter are. -->
+        <logstash-logback-encoder.version>7.4</logstash-logback-encoder.version>
     </properties>
 
     <modules>
@@ -90,6 +92,24 @@
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-bootstrap</artifactId>
+        </dependency>
+
+        <!-- Observability, inherited by all modules. Distributed tracing via Micrometer
+             Tracing + Brave, spans reported to Zipkin; structured JSON logs to Logstash.
+             The trace/span IDs Brave puts in the SLF4J MDC are what tie a Zipkin trace to
+             its Kibana logs. Versions for the first two come from the Spring Boot BOM. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback-encoder.version}</version>
         </dependency>
     </dependencies>
 

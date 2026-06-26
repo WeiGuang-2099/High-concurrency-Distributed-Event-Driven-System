@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared logging config for every service (auction-common is on each service's
+  classpath, and logback auto-loads logback-spring.xml from there).
+
+  - CONSOLE: human-readable, always on. The [app,traceId,spanId] segment is the
+    Micrometer/Brave trace context pulled from the SLF4J MDC.
+  - LOGSTASH: JSON over TCP to Logstash (json_lines codec on :5000), which indexes
+    into Elasticsearch (auction-logs index) for Kibana. Only active under the "elk"
+    Spring profile, so a missing Logstash never spams reconnect errors in plain runs.
+    Enable it by activating the elk Spring profile (see README); start ELK first.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="unknown"/>
+    <property name="LOGSTASH_HOST" value="${LOGSTASH_HOST:-localhost}"/>
+    <property name="LOGSTASH_PORT" value="${LOGSTASH_PORT:-5000}"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [${appName},%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+        <destination>${LOGSTASH_HOST}:${LOGSTASH_PORT}</destination>
+        <keepAliveDuration>5 minutes</keepAliveDuration>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- traceId/spanId come through automatically (LogstashEncoder includes the MDC);
+                 this just tags every line with its originating service. -->
+            <customFields>{"service":"${appName}"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <springProfile name="elk">
+            <appender-ref ref="LOGSTASH"/>
+        </springProfile>
+    </root>
+</configuration>

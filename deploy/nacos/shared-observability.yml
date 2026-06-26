@@ -1,0 +1,11 @@
+# Shared observability config, pulled from Nacos by every service's bootstrap.yml.
+# Hosts are localhost because services run as host JVMs (java -jar) while Zipkin
+# runs in Docker with port 9411 published to the host.
+management:
+  tracing:
+    sampling:
+      # Dev/demo: sample every request. Lower this (e.g. 0.1) under real load.
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
