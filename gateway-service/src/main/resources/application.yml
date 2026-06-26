@@ -6,6 +6,9 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
+        # registered and the host-run gateway cannot reach it (503).
+        ip: 127.0.0.1
     gateway:
       discovery:
         locator:
@@ -50,7 +53,9 @@ spring:
       globalcors:
         cors-configurations:
           '[/**]':
-            allowed-origins: "*"
+            # allowed-origins "*" is rejected by Spring when allow-credentials is true
+            # (it cannot be reflected into Access-Control-Allow-Origin). Use patterns.
+            allowed-origin-patterns: "*"
             allowed-methods:
               - GET
               - POST

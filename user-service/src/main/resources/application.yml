@@ -6,6 +6,9 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
+        # registered and the host-run gateway cannot reach it (503).
+        ip: 127.0.0.1
   # Local profile for development (without Nacos)
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
