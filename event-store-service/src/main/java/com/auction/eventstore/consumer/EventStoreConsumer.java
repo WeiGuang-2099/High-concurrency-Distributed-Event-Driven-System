@@ -43,13 +43,15 @@ public class EventStoreConsumer {
         String aggregateType = inferAggregateType(topic);
         try {
             eventStoreService.append(event, topic, aggregateType);
-            invalidateCacheFor(event);
-        } catch (Exception e) {
-            log.error("Failed to store event eventId={} type={}: {}",
+        } catch (RuntimeException e) {
+            // Do NOT ack: this store is the source of truth, so a failed append must
+            // propagate to the container error handler (retry, then dead-letter topic).
+            log.error("Failed to store event eventId={} type={}, will retry/DLT: {}",
                     event.getEventId(), event.getEventType(), e.getMessage(), e);
-        } finally {
-            ack.acknowledge();
+            throw e;
         }
+        invalidateCacheFor(event);
+        ack.acknowledge();
     }
 
     private String inferAggregateType(String topic) {

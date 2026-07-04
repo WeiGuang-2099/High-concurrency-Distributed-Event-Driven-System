@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -14,6 +15,8 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.converter.JsonMessageConverter;
 import org.springframework.kafka.listener.ContainerProperties;
@@ -65,7 +68,7 @@ public class KafkaConfig {
 
     @Bean(name = "kafkaListenerContainerFactory")
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
-            ConsumerFactory<String, Object> cf) {
+            ConsumerFactory<String, Object> cf, KafkaTemplate<String, Object> kafkaTemplate) {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(cf);
@@ -73,9 +76,22 @@ public class KafkaConfig {
         mapper.registerModule(new JavaTimeModule());
         factory.setRecordMessageConverter(new JsonMessageConverter(mapper));
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-        // Retry 3 times with 1s gap, then skip (do not block partition indefinitely)
-        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1000L, 3L)));
+        // Retry 3 times with 1s gap, then publish to the source topic's DLT. Skipping
+        // instead of dead-lettering would silently lose events from the source of truth.
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
+                kafkaTemplate,
+                (record, ex) -> new TopicPartition(dltFor(record.topic()), record.partition()));
+        factory.setCommonErrorHandler(new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L)));
         return factory;
+    }
+
+    private static String dltFor(String topic) {
+        switch (topic) {
+            case KafkaTopics.AUCTION_EVENTS: return KafkaTopics.AUCTION_EVENTS_DLT;
+            case KafkaTopics.TICKET_EVENTS: return KafkaTopics.TICKET_EVENTS_DLT;
+            case KafkaTopics.ORDER_EVENTS: return KafkaTopics.ORDER_EVENTS_DLT;
+            default: return topic + "-dlt";
+        }
     }
 }
 
