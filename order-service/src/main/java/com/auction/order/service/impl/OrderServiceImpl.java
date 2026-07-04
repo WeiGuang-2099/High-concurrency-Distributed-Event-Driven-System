@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -42,6 +43,7 @@ public class OrderServiceImpl implements OrderService {
     private final TicketFeignClient ticketFeignClient;
     private final OrderEventProducer eventProducer;
     private final RabbitTemplate rabbitTemplate;
+    private final TransactionTemplate txTemplate;
 
     @Value("${payment.mock.success-rate:0.95}")
     private double successRate;
@@ -56,12 +58,14 @@ public class OrderServiceImpl implements OrderService {
                             PaymentMapper paymentMapper,
                             TicketFeignClient ticketFeignClient,
                             OrderEventProducer eventProducer,
-                            RabbitTemplate rabbitTemplate) {
+                            RabbitTemplate rabbitTemplate,
+                            TransactionTemplate txTemplate) {
         this.orderMapper = orderMapper;
         this.paymentMapper = paymentMapper;
         this.ticketFeignClient = ticketFeignClient;
         this.eventProducer = eventProducer;
         this.rabbitTemplate = rabbitTemplate;
+        this.txTemplate = txTemplate;
     }
 
     @Override
@@ -128,8 +132,14 @@ public class OrderServiceImpl implements OrderService {
         return toResponse(order);
     }
 
+    /**
+     * Deliberately NOT @Transactional: the payment simulation (an external-call stand-in,
+     * 0.5-2s) and the reservation-confirm Feign call must not hold a MySQL connection and
+     * transaction open, or concurrent payments exhaust the connection pool. Each state
+     * transition is a short programmatic transaction; the state machine stays safe under
+     * concurrency because every transition is a CAS UPDATE.
+     */
     @Override
-    @Transactional
     public PayResponse pay(Long userId, Long orderId) {
         Order order = loadAndVerifyOwner(userId, orderId);
 
@@ -162,28 +172,25 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessException(409, "Cannot pay order in status " + order.getStatus());
         }
 
-        int rows = orderMapper.compareAndSetStatus(orderId,
-                OrderStatus.CREATED.name(), OrderStatus.PAYING.name());
-        if (rows == 0) {
-            throw new BusinessException(409, "Order status changed, please retry");
-        }
+        // Short tx #1: claim the order (CAS to PAYING) + create the payment record.
+        Payment payment = txTemplate.execute(status -> {
+            int rows = orderMapper.compareAndSetStatus(orderId,
+                    OrderStatus.CREATED.name(), OrderStatus.PAYING.name());
+            if (rows == 0) {
+                throw new BusinessException(409, "Order status changed, please retry");
+            }
+            Payment p = new Payment();
+            p.setOrderId(orderId);
+            p.setPaymentMethod("MOCK");
+            p.setAmount(order.getAmount());
+            p.setStatus(PaymentStatus.PENDING);
+            paymentMapper.insert(p);
+            return p;
+        });
         order.setStatus(OrderStatus.PAYING);
 
-        Payment payment = new Payment();
-        payment.setOrderId(orderId);
-        payment.setPaymentMethod("MOCK");
-        payment.setAmount(order.getAmount());
-        payment.setStatus(PaymentStatus.PENDING);
-        paymentMapper.insert(payment);
-
-        final Long oid = orderId;
-        final Long uid = userId;
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                eventProducer.publishPaymentInitiated(oid, uid, order.getAmount());
-            }
-        });
+        // tx #1 committed; publish and run the slow payment outside any transaction.
+        eventProducer.publishPaymentInitiated(orderId, userId, order.getAmount());
 
         boolean success = simulatePayment();
 
@@ -308,17 +315,23 @@ public class OrderServiceImpl implements OrderService {
 
     private PayResponse handlePaymentSuccess(Order order, Payment payment) {
         Long orderId = order.getId();
-        orderMapper.compareAndSetStatus(orderId,
-                OrderStatus.PAYING.name(), OrderStatus.PAID.name());
 
-        payment.setStatus(PaymentStatus.SUCCESS);
-        paymentMapper.updateById(payment);
+        // Short tx #2: mark PAID + record the successful payment.
+        txTemplate.execute(status -> {
+            orderMapper.compareAndSetStatus(orderId,
+                    OrderStatus.PAYING.name(), OrderStatus.PAID.name());
 
-        Order paidOrder = new Order();
-        paidOrder.setId(orderId);
-        paidOrder.setPaidAt(LocalDateTime.now());
-        orderMapper.updateById(paidOrder);
+            payment.setStatus(PaymentStatus.SUCCESS);
+            paymentMapper.updateById(payment);
 
+            Order paidOrder = new Order();
+            paidOrder.setId(orderId);
+            paidOrder.setPaidAt(LocalDateTime.now());
+            orderMapper.updateById(paidOrder);
+            return null;
+        });
+
+        // Remote call between transactions -- must not hold a DB connection.
         if (order.getType() == OrderType.TICKET) {
             try {
                 ticketFeignClient.confirmReservation(order.getReferenceId());
@@ -326,27 +339,29 @@ public class OrderServiceImpl implements OrderService {
                 // Stock confirmation failed -- must NOT leave the order as PAID/COMPLETED
                 // while the reservation is still PENDING (data inconsistency). Roll back the
                 // order to PAYING and surface the error so the caller can retry. The payment
-                // record stays PENDING; a reconciliation job (or retry) can resume later.
+                // record goes back to PENDING; a reconciliation job (or retry) can resume later.
                 log.error("Failed to confirm reservation for order={}, rolling back order status", orderId, e);
-                orderMapper.compareAndSetStatus(orderId,
-                        OrderStatus.PAID.name(), OrderStatus.PAYING.name());
-                payment.setStatus(PaymentStatus.PENDING);
-                paymentMapper.updateById(payment);
+                txTemplate.execute(status -> {
+                    orderMapper.compareAndSetStatus(orderId,
+                            OrderStatus.PAID.name(), OrderStatus.PAYING.name());
+                    payment.setStatus(PaymentStatus.PENDING);
+                    paymentMapper.updateById(payment);
+                    return null;
+                });
                 throw new BusinessException(500,
                         "Payment was processed but stock confirmation failed; please retry");
             }
         }
 
-        orderMapper.compareAndSetStatus(orderId,
-                OrderStatus.PAID.name(), OrderStatus.COMPLETED.name());
-
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                eventProducer.publishPaymentCompleted(orderId, order.getUserId(), order.getAmount());
-                log.info("Payment completed: orderId={}", orderId);
-            }
+        // Short tx #3: finish the state machine.
+        txTemplate.execute(status -> {
+            orderMapper.compareAndSetStatus(orderId,
+                    OrderStatus.PAID.name(), OrderStatus.COMPLETED.name());
+            return null;
         });
+
+        eventProducer.publishPaymentCompleted(orderId, order.getUserId(), order.getAmount());
+        log.info("Payment completed: orderId={}", orderId);
 
         return PayResponse.builder()
                 .orderId(orderId)
@@ -357,11 +372,14 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private PayResponse handlePaymentFailure(Long orderId, Payment payment) {
-        orderMapper.compareAndSetStatus(orderId,
-                OrderStatus.PAYING.name(), OrderStatus.CREATED.name());
+        txTemplate.execute(status -> {
+            orderMapper.compareAndSetStatus(orderId,
+                    OrderStatus.PAYING.name(), OrderStatus.CREATED.name());
 
-        payment.setStatus(PaymentStatus.FAILED);
-        paymentMapper.updateById(payment);
+            payment.setStatus(PaymentStatus.FAILED);
+            paymentMapper.updateById(payment);
+            return null;
+        });
 
         log.info("Payment failed (mock): orderId={}", orderId);
 

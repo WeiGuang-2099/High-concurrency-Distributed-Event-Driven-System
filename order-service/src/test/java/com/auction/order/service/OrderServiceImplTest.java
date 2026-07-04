@@ -26,12 +26,16 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,6 +51,7 @@ class OrderServiceImplTest {
     @Mock private TicketFeignClient ticketFeignClient;
     @Mock private OrderEventProducer eventProducer;
     @Mock private RabbitTemplate rabbitTemplate;
+    @Mock private TransactionTemplate txTemplate;
 
     @InjectMocks private OrderServiceImpl orderService;
 
@@ -56,6 +61,11 @@ class OrderServiceImplTest {
         ReflectionTestUtils.setField(orderService, "minLatencyMs", 0);
         ReflectionTestUtils.setField(orderService, "maxLatencyMs", 1);
         TransactionSynchronizationManager.initSynchronization();
+        // Programmatic short transactions: run the callback inline
+        lenient().when(txTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(new SimpleTransactionStatus());
+        });
     }
 
     @AfterEach
@@ -300,6 +310,45 @@ class OrderServiceImplTest {
             assertThatThrownBy(() -> orderService.pay(10L, 1L))
                     .isInstanceOf(BusinessException.class)
                     .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(409));
+        }
+
+        @Test
+        @DisplayName("慢操作(支付模拟/Feign确认)必须在数据库事务之外执行，不占用连接")
+        void pay_slowWorkRunsOutsideTransaction() {
+            Order order = createOrder(1L, 10L, OrderStatus.CREATED, OrderType.TICKET, 50L);
+            when(orderMapper.selectById(1L)).thenReturn(order);
+            when(orderMapper.compareAndSetStatus(any(), any(), any())).thenReturn(1);
+            doAnswer(invocation -> {
+                Payment payment = invocation.getArgument(0);
+                payment.setId(1L);
+                return 1;
+            }).when(paymentMapper).insert(any(Payment.class));
+
+            // Track whether we are inside a programmatic transaction when the remote
+            // confirm call happens.
+            AtomicBoolean inTx = new AtomicBoolean(false);
+            AtomicBoolean confirmCalledInsideTx = new AtomicBoolean(true);
+            // doAnswer form: re-stubbing with when() would trigger the setUp answer with a null arg
+            doAnswer(invocation -> {
+                TransactionCallback<?> callback = invocation.getArgument(0);
+                inTx.set(true);
+                try {
+                    return callback.doInTransaction(new SimpleTransactionStatus());
+                } finally {
+                    inTx.set(false);
+                }
+            }).when(txTemplate).execute(any());
+            when(ticketFeignClient.confirmReservation(50L)).thenAnswer(invocation -> {
+                confirmCalledInsideTx.set(inTx.get());
+                return null;
+            });
+
+            orderService.pay(10L, 1L);
+
+            // DB work is split into short programmatic transactions...
+            verify(txTemplate, atLeast(2)).execute(any());
+            // ...and the Feign confirm runs between them, never inside one.
+            assertThat(confirmCalledInsideTx).isFalse();
         }
 
         @Test
