@@ -20,6 +20,9 @@ public interface AuctionMapper extends BaseMapper<Auction> {
     @Select("SELECT * FROM auction WHERE status = #{status} AND end_time <= #{now} LIMIT 100")
     List<Auction> findReadyToExpire(@Param("status") String status, @Param("now") LocalDateTime now);
 
+    @Select("SELECT * FROM auction WHERE status = #{status}")
+    List<Auction> findByStatus(@Param("status") String status);
+
     @Update("UPDATE auction SET status = #{newStatus} WHERE id = #{id} AND status = #{expectedStatus}")
     int compareAndSetStatus(@Param("id") Long id,
                             @Param("expectedStatus") String expectedStatus,
