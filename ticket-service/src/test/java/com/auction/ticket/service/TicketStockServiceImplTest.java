@@ -273,6 +273,27 @@ class TicketStockServiceImplTest {
                     .isInstanceOf(BusinessException.class)
                     .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(400));
         }
+
+        @Test
+        @DisplayName("状态竞争 - CAS未命中(另一事务已处理)时抛409且不动库存")
+        void confirm_statusRace_throws409AndDoesNotTouchStock() {
+            Reservation reservation = new Reservation();
+            reservation.setId(1L);
+            reservation.setStockId(10L);
+            reservation.setUserId(1L);
+            reservation.setQuantity(2);
+            reservation.setStatus(ReservationStatus.PENDING);
+
+            when(reservationMapper.findByIdAndUserId(1L, 1L)).thenReturn(reservation);
+            // Another transaction (e.g. timeout expiry) already flipped the status
+            when(reservationMapper.updateStatusIfPending(1L, "CONFIRMED")).thenReturn(0);
+
+            assertThatThrownBy(() -> ticketStockService.confirm(1L, 1L))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(409));
+
+            verify(stockMapper, never()).decrementReservedAndIncrementSold(anyLong(), anyInt());
+        }
     }
 
     // ==================== cancel ====================
@@ -316,6 +337,33 @@ class TicketStockServiceImplTest {
             assertThatThrownBy(() -> ticketStockService.cancel(1L, 999L))
                     .isInstanceOf(BusinessException.class)
                     .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(404));
+        }
+
+        @Test
+        @DisplayName("状态竞争 - CAS未命中(超时释放已处理)时抛409且不动库存不退Redis")
+        void cancel_statusRace_throws409AndDoesNotTouchStock() {
+            Reservation reservation = new Reservation();
+            reservation.setId(1L);
+            reservation.setStockId(10L);
+            reservation.setUserId(1L);
+            reservation.setQuantity(2);
+            reservation.setStatus(ReservationStatus.PENDING);
+
+            TicketStock stock = new TicketStock(10L, 100L, "VIP", 100, 5, 0, 0, null, null);
+
+            when(reservationMapper.findByIdAndUserId(1L, 1L)).thenReturn(reservation);
+            when(stockMapper.selectById(10L)).thenReturn(stock);
+            // The timeout consumer expired this reservation between our read and update
+            when(reservationMapper.updateStatusIfPending(1L, "CANCELLED")).thenReturn(0);
+
+            assertThatThrownBy(() -> ticketStockService.cancel(1L, 1L))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(409));
+
+            verify(stockMapper, never()).decrementReserved(anyLong(), anyInt());
+
+            simulateCommit();
+            verify(redis, never()).execute(eq(releaseTicketScript), anyList(), any(Object[].class));
         }
     }
 
@@ -448,6 +496,7 @@ class TicketStockServiceImplTest {
             TicketStock stock = new TicketStock(1L, 100L, "VIP", 100, 10, 0, 0, null, null);
 
             when(stockMapper.selectById(1L)).thenReturn(stock);
+            when(stockMapper.incrementReservedIfAvailable(1L, 1)).thenReturn(1);
 
             doAnswer(invocation -> {
                 Reservation r = invocation.getArgument(0);
@@ -458,7 +507,7 @@ class TicketStockServiceImplTest {
             Long reservationId = ticketStockService.settleReserve(1L, 5L, 1);
 
             assertThat(reservationId).isEqualTo(77L);
-            verify(stockMapper).incrementReserved(1L, 1);
+            verify(stockMapper).incrementReservedIfAvailable(1L, 1);
         }
 
         @Test
@@ -468,6 +517,21 @@ class TicketStockServiceImplTest {
             // available = 100 - 95 - 5 = 0
 
             when(stockMapper.selectById(1L)).thenReturn(stock);
+
+            assertThatThrownBy(() -> ticketStockService.settleReserve(1L, 5L, 1))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(ex -> assertThat(((BusinessException) ex).getCode()).isEqualTo(400));
+        }
+
+        @Test
+        @DisplayName("并发耗尽 - 读到有库存但守卫UPDATE未命中时抛400（原子防超卖）")
+        void settleReserve_concurrentDepletion_throws400() {
+            // Read shows 1 available, but a concurrent settle takes it before our UPDATE:
+            // the guarded increment matches 0 rows and the reserve must fail, not oversell.
+            TicketStock stock = new TicketStock(1L, 100L, "VIP", 100, 99, 0, 0, null, null);
+
+            when(stockMapper.selectById(1L)).thenReturn(stock);
+            when(stockMapper.incrementReservedIfAvailable(1L, 1)).thenReturn(0);
 
             assertThatThrownBy(() -> ticketStockService.settleReserve(1L, 5L, 1))
                     .isInstanceOf(BusinessException.class)

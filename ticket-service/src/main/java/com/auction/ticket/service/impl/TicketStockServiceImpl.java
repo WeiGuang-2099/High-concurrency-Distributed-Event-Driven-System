@@ -183,7 +183,12 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(400, "Reservation is not in PENDING status");
         }
 
-        reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CONFIRMED.name());
+        // CAS guard: the timeout consumer may expire this reservation between our read
+        // and this update. If we lost the race, the stock adjustment below must not run.
+        int rows = reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CONFIRMED.name());
+        if (rows == 0) {
+            throw new BusinessException(409, "Reservation status changed, please retry");
+        }
         stockMapper.decrementReservedAndIncrementSold(reservation.getStockId(), reservation.getQuantity());
 
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -208,7 +213,12 @@ public class TicketStockServiceImpl implements TicketStockService {
 
         TicketStock stock = stockMapper.selectById(reservation.getStockId());
 
-        reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CANCELLED.name());
+        // CAS guard, same as confirm(): losing the race against the timeout consumer
+        // must not double-release stock (MySQL decrement + Redis refund).
+        int rows = reservationMapper.updateStatusIfPending(reservationId, ReservationStatus.CANCELLED.name());
+        if (rows == 0) {
+            throw new BusinessException(409, "Reservation status changed, please retry");
+        }
         stockMapper.decrementReserved(reservation.getStockId(), reservation.getQuantity());
 
         if (stock != null) {
@@ -265,6 +275,8 @@ public class TicketStockServiceImpl implements TicketStockService {
             throw new BusinessException(404, "Ticket stock not found");
         }
 
+        // Fast-fail on an obviously depleted read; the guarded UPDATE below is the
+        // authoritative check (read-then-act alone would be a concurrent oversell window).
         int available = stock.getTotalQuantity() - stock.getReservedQuantity() - stock.getSoldQuantity();
         if (available < quantity) {
             throw new BusinessException(400, "Out of stock");
@@ -278,7 +290,11 @@ public class TicketStockServiceImpl implements TicketStockService {
         reservation.setExpireAt(LocalDateTime.now().plusMinutes(RESERVATION_TIMEOUT_MINUTES));
         reservationMapper.insert(reservation);
 
-        stockMapper.incrementReserved(stock.getId(), quantity);
+        int rows = stockMapper.incrementReservedIfAvailable(stock.getId(), quantity);
+        if (rows == 0) {
+            // Concurrent settle depleted the stock after our read; rollback removes the insert.
+            throw new BusinessException(400, "Out of stock");
+        }
 
         log.info("Settle-reserved {} tickets for stockId={}, userId={}, reservationId={}",
                 quantity, stock.getId(), userId, reservation.getId());

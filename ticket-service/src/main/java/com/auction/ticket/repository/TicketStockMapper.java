@@ -19,6 +19,12 @@ public interface TicketStockMapper extends BaseMapper<TicketStock> {
     @Update("UPDATE ticket_stock SET reserved_quantity = reserved_quantity + #{quantity}, version = version + 1 WHERE id = #{id}")
     int incrementReserved(@Param("id") Long id, @Param("quantity") int quantity);
 
+    // Guarded variant for paths where MySQL itself is the concurrency arbiter (no Redis
+    // in front): the WHERE clause makes check-and-reserve a single atomic statement.
+    @Update("UPDATE ticket_stock SET reserved_quantity = reserved_quantity + #{quantity}, version = version + 1 " +
+            "WHERE id = #{id} AND total_quantity - reserved_quantity - sold_quantity >= #{quantity}")
+    int incrementReservedIfAvailable(@Param("id") Long id, @Param("quantity") int quantity);
+
     @Update("UPDATE ticket_stock SET reserved_quantity = reserved_quantity - #{quantity}, sold_quantity = sold_quantity + #{quantity}, version = version + 1 WHERE id = #{id} AND reserved_quantity >= #{quantity}")
     int decrementReservedAndIncrementSold(@Param("id") Long id, @Param("quantity") int quantity);
 
