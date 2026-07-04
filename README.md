@@ -1,5 +1,7 @@
 # High-Concurrency Auction Platform
 
+[![CI](https://github.com/WeiGuang-2099/High-concurrency-Distributed-Event-Driven-System/actions/workflows/ci.yml/badge.svg)](https://github.com/WeiGuang-2099/High-concurrency-Distributed-Event-Driven-System/actions/workflows/ci.yml)
+
 A real-time auction and ticketing platform built with a distributed event-driven architecture. The system handles two high-concurrency scenarios: **flash auctions** (thousands of users bidding simultaneously) and **ticket rushes** (thousands of users buying limited stock). Both scenarios are protected against overselling and data races using Redis Lua scripts, MySQL optimistic locking, and transactional compensation.
 
 > **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), and a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency. See [Performance & Load Testing](#performance--load-testing).
