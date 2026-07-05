@@ -57,15 +57,6 @@ class EventStoreConsumerTest {
     }
 
     @Test
-    @DisplayName("非事件负载 - 跳过并 ack")
-    void nonEventPayload_ackedAndSkipped() {
-        consumer.onEvent("not-an-event", KafkaTopics.AUCTION_EVENTS, ack);
-
-        verify(eventStoreService, never()).append(any(), anyString(), anyString());
-        verify(ack).acknowledge();
-    }
-
-    @Test
     @DisplayName("缓存失效失败 - 不影响 ack（缓存只是优化，不参与一致性）")
     void cacheInvalidationFailure_stillAcks() {
         BaseEvent event = new BaseEvent("123", "BidPlaced");

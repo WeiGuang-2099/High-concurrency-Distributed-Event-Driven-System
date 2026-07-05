@@ -3,6 +3,7 @@ package com.auction.auction.messaging;
 import com.auction.auction.domain.entity.Bid;
 import com.auction.auction.repository.AuctionMapper;
 import com.auction.auction.repository.BidMapper;
+import com.auction.common.event.BaseEvent;
 import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.auction.BidPlacedEvent;
 import org.slf4j.Logger;
@@ -41,7 +42,9 @@ public class AuctionEventConsumer {
             groupId = "auction-service-bid-persistor",
             containerFactory = "kafkaListenerContainerFactory")
     @Transactional
-    public void onEvent(Object payload, Acknowledgment ack) {
+    // Typed as BaseEvent: an Object parameter would receive the raw ConsumerRecord
+    // (no JSON conversion) and the BidPlacedEvent instanceof check would silently miss.
+    public void onEvent(BaseEvent payload, Acknowledgment ack) {
         try {
             if (payload instanceof BidPlacedEvent event) {
                 persistBid(event);

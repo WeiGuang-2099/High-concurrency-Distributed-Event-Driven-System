@@ -13,6 +13,8 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.converter.JsonMessageConverter;
+import org.springframework.kafka.support.mapping.DefaultJackson2JavaTypeMapper;
+import org.springframework.kafka.support.mapping.Jackson2JavaTypeMapper;
 import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
@@ -46,7 +48,19 @@ public class KafkaConfig {
         // Use Jackson JSON converter with Java Time module for event deserialization
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
-        factory.setRecordMessageConverter(new JsonMessageConverter(mapper));
+        JsonMessageConverter converter = new JsonMessageConverter(mapper);
+        // Resolve the concrete event class from the producer's __TypeId__ header.
+        // Without TYPE_ID precedence the converter deserializes into the inferred
+        // parameter type (BaseEvent), silently dropping every subtype field.
+        DefaultJackson2JavaTypeMapper typeMapper = new DefaultJackson2JavaTypeMapper();
+        typeMapper.setTypePrecedence(Jackson2JavaTypeMapper.TypePrecedence.TYPE_ID);
+        typeMapper.addTrustedPackages(
+                "com.auction.common.event",
+                "com.auction.common.event.auction",
+                "com.auction.common.event.ticket",
+                "com.auction.common.event.order");
+        converter.setTypeMapper(typeMapper);
+        factory.setRecordMessageConverter(converter);
         // Error handling: retry 3 times with 1s gap, then skip
         factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1000L, 3L)));
         return factory;

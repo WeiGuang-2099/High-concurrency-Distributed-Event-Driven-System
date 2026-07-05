@@ -1,5 +1,6 @@
 package com.auction.eventstore.consumer;
 
+import com.auction.common.event.BaseEvent;
 import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.auction.BidPlacedEvent;
 import com.auction.eventstore.domain.BidHistoryEntry;
@@ -25,7 +26,9 @@ public class BidHistoryProjection {
             topics = KafkaTopics.AUCTION_EVENTS,
             groupId = "projection-bid-history",
             containerFactory = "kafkaListenerContainerFactory")
-    public void on(Object payload, Acknowledgment ack) {
+    // Typed as BaseEvent: an Object parameter would receive the raw ConsumerRecord
+    // (no JSON conversion) and every instanceof check below would silently miss.
+    public void on(BaseEvent payload, Acknowledgment ack) {
         try {
             if (payload instanceof BidPlacedEvent) {
                 BidPlacedEvent e = (BidPlacedEvent) payload;

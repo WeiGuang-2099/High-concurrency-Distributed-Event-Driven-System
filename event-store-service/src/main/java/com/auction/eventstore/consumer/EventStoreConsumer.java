@@ -27,19 +27,16 @@ public class EventStoreConsumer {
     private final EventStoreService eventStoreService;
     private final CacheInvalidationService cacheInvalidationService;
 
+    // The payload parameter MUST be typed as BaseEvent, not Object: spring-kafka
+    // hands an Object parameter the raw ConsumerRecord without ever invoking the
+    // JSON converter, so an Object-typed listener silently skips every event.
     @KafkaListener(
             topics = {KafkaTopics.AUCTION_EVENTS, KafkaTopics.TICKET_EVENTS, KafkaTopics.ORDER_EVENTS},
             groupId = "event-store-writer",
             containerFactory = "kafkaListenerContainerFactory")
-    public void onEvent(Object payload,
+    public void onEvent(BaseEvent event,
                         @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
                         Acknowledgment ack) {
-        if (!(payload instanceof BaseEvent)) {
-            log.warn("Ignoring non-event payload of type: {}", payload.getClass().getName());
-            ack.acknowledge();
-            return;
-        }
-        BaseEvent event = (BaseEvent) payload;
         String aggregateType = inferAggregateType(topic);
         try {
             eventStoreService.append(event, topic, aggregateType);

@@ -19,6 +19,8 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.converter.JsonMessageConverter;
+import org.springframework.kafka.support.mapping.DefaultJackson2JavaTypeMapper;
+import org.springframework.kafka.support.mapping.Jackson2JavaTypeMapper;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.util.backoff.FixedBackOff;
 
@@ -54,6 +56,24 @@ public class KafkaConfig {
         return TopicBuilder.name(KafkaTopics.ORDER_EVENTS).partitions(6).replicas(1).build();
     }
 
+    // DLTs must exist with the same partition count as their source topics: the
+    // dead-letter recoverer publishes to the SAME partition the record came from,
+    // which fails if the broker auto-created the DLT with fewer partitions.
+    @Bean
+    public NewTopic auctionEventsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.AUCTION_EVENTS_DLT).partitions(6).replicas(1).build();
+    }
+
+    @Bean
+    public NewTopic ticketEventsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.TICKET_EVENTS_DLT).partitions(6).replicas(1).build();
+    }
+
+    @Bean
+    public NewTopic orderEventsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.ORDER_EVENTS_DLT).partitions(6).replicas(1).build();
+    }
+
     // ---- Consumer factory (no group-id here; each @KafkaListener sets its own) ----
     @Bean
     public ConsumerFactory<String, Object> consumerFactory() {
@@ -74,7 +94,19 @@ public class KafkaConfig {
         factory.setConsumerFactory(cf);
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
-        factory.setRecordMessageConverter(new JsonMessageConverter(mapper));
+        JsonMessageConverter converter = new JsonMessageConverter(mapper);
+        // Resolve the concrete event class from the producer's __TypeId__ header.
+        // Without TYPE_ID precedence the converter deserializes into the inferred
+        // parameter type (BaseEvent), silently dropping every subtype field.
+        DefaultJackson2JavaTypeMapper typeMapper = new DefaultJackson2JavaTypeMapper();
+        typeMapper.setTypePrecedence(Jackson2JavaTypeMapper.TypePrecedence.TYPE_ID);
+        typeMapper.addTrustedPackages(
+                "com.auction.common.event",
+                "com.auction.common.event.auction",
+                "com.auction.common.event.ticket",
+                "com.auction.common.event.order");
+        converter.setTypeMapper(typeMapper);
+        factory.setRecordMessageConverter(converter);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         // Retry 3 times with 1s gap, then publish to the source topic's DLT. Skipping
         // instead of dead-lettering would silently lose events from the source of truth.

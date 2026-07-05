@@ -1,5 +1,6 @@
 package com.auction.notification.event;
 
+import com.auction.common.event.BaseEvent;
 import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.auction.AuctionExpiredEvent;
 import com.auction.common.event.auction.AuctionSettledEvent;
@@ -36,7 +37,9 @@ public class AuctionEventConsumer {
             topics = KafkaTopics.AUCTION_EVENTS,
             groupId = "notification-service",
             containerFactory = "kafkaListenerContainerFactory")
-    public void onEvent(Object payload, Acknowledgment ack) {
+    // Typed as BaseEvent: an Object parameter would receive the raw ConsumerRecord
+    // (no JSON conversion) and every instanceof check below would silently miss.
+    public void onEvent(BaseEvent payload, Acknowledgment ack) {
         try {
             if (payload instanceof BidPlacedEvent event) {
                 handleBidPlaced(event);

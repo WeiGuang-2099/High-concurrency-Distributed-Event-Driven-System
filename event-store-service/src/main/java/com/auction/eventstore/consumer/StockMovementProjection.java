@@ -27,7 +27,9 @@ public class StockMovementProjection {
             topics = KafkaTopics.TICKET_EVENTS,
             groupId = "projection-stock-movement",
             containerFactory = "kafkaListenerContainerFactory")
-    public void on(Object payload, Acknowledgment ack) {
+    // Typed as BaseEvent: an Object parameter would receive the raw ConsumerRecord
+    // (no JSON conversion) and every instanceof check below would silently miss.
+    public void on(BaseEvent payload, Acknowledgment ack) {
         try {
             if (payload instanceof StockReservedEvent) {
                 StockReservedEvent e = (StockReservedEvent) payload;

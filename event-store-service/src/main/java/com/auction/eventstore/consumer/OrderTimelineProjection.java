@@ -1,5 +1,6 @@
 package com.auction.eventstore.consumer;
 
+import com.auction.common.event.BaseEvent;
 import com.auction.common.event.KafkaTopics;
 import com.auction.common.event.order.OrderCancelledEvent;
 import com.auction.common.event.order.OrderCreatedEvent;
@@ -28,7 +29,9 @@ public class OrderTimelineProjection {
             topics = KafkaTopics.ORDER_EVENTS,
             groupId = "projection-order-timeline",
             containerFactory = "kafkaListenerContainerFactory")
-    public void on(Object payload, Acknowledgment ack) {
+    // Typed as BaseEvent: an Object parameter would receive the raw ConsumerRecord
+    // (no JSON conversion) and every instanceof check below would silently miss.
+    public void on(BaseEvent payload, Acknowledgment ack) {
         try {
             if (payload instanceof OrderCreatedEvent) {
                 OrderCreatedEvent e = (OrderCreatedEvent) payload;
