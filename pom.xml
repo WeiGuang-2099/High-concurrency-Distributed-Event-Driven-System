@@ -28,6 +28,10 @@
         <nimbus-jose-jwt.version>9.37.3</nimbus-jose-jwt.version>
         <!-- Not managed by the Spring Boot BOM; micrometer-tracing / zipkin-reporter are. -->
         <logstash-logback-encoder.version>7.4</logstash-logback-encoder.version>
+        <wiremock.version>3.5.4</wiremock.version>
+        <!-- Override the Boot-managed 1.19.7: its bundled docker-java cannot talk to
+             recent Docker daemons (npipe /info returns 400 on Docker 29+). -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <modules>
@@ -81,6 +85,14 @@
                 <artifactId>nimbus-jose-jwt</artifactId>
                 <version>${nimbus-jose-jwt.version}</version>
             </dependency>
+
+            <!-- WireMock (standalone = shaded Jetty, avoids servlet-stack conflicts).
+                 Testcontainers versions come from the Spring Boot BOM. -->
+            <dependency>
+                <groupId>org.wiremock</groupId>
+                <artifactId>wiremock-standalone</artifactId>
+                <version>${wiremock.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -123,6 +135,21 @@
                     <target>${java.version}</target>
                     <encoding>UTF-8</encoding>
                 </configuration>
+            </plugin>
+            <!-- Integration tests (*IT.java, Testcontainers-based) run in the
+                 integration-test phase: `mvn test` stays fast, `mvn verify` (CI)
+                 runs them. Requires a Docker daemon; skip with -DskipITs. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

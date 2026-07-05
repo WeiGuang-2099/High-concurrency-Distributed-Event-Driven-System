@@ -1,0 +1,14 @@
+# Test-only bootstrap. The test classpath shadows the main bootstrap.yml, so
+# integration tests never attach to Nacos (config or discovery).
+spring:
+  application:
+    name: event-store-service
+  cloud:
+    nacos:
+      config:
+        enabled: false
+      discovery:
+        enabled: false
+    service-registry:
+      auto-registration:
+        enabled: false
