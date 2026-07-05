@@ -2,18 +2,17 @@
   port: 8085
 
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: localhost:8848
-        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
-        # registered and the host-run gateway cannot reach it (503).
-        ip: 127.0.0.1
+  application:
+    name: event-store-service
+  config:
+    # Centralized config from config-server; optional so the service still boots
+    # on the local defaults below when the config server is down.
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
   # Kafka consumer/producer are configured in KafkaConfig.java (StringDeserializer
-  # + JsonMessageConverter). Only bootstrap-servers is taken from shared-kafka.yml.
+  # + JsonMessageConverter). Only bootstrap-servers comes from central config.
   data:
     mongodb:
-      # Overridden by shared-mongo.yml in Nacos; localhost default for IDE runs
+      # Overridden by config-repo/event-store-service.yml; localhost default for IDE runs
       uri: mongodb://root:root@localhost:27017/event_store?authSource=admin
 
 # Event store domain config
@@ -26,3 +25,13 @@ management:
     web:
       exposure:
         include: health,info
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+  instance:
+    # Single-host dev: register the loopback IP, otherwise a WSL/virtual adapter
+    # IP gets registered and the host-run gateway cannot reach it (503).
+    prefer-ip-address: true
+    ip-address: 127.0.0.1

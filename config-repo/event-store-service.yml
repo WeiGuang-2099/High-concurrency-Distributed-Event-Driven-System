@@ -1,0 +1,7 @@
+# Event-store-specific centralized config (was Nacos shared-mongo.yml).
+# localhost because the service runs as a host JVM while MongoDB runs in Docker
+# with port 27017 published to the host.
+spring:
+  data:
+    mongodb:
+      uri: mongodb://root:root@localhost:27017/event_store?authSource=admin

@@ -1,0 +1,43 @@
+# Served by config-server to EVERY client application (Spring Cloud Config's
+# global 'application' document). Replaces the former Nacos shared-configs:
+# shared-db.yml + shared-redis.yml + shared-kafka.yml + shared-observability.yml.
+#
+# Hosts are localhost because services run as host JVMs (java -jar) while the
+# infrastructure runs in Docker with ports published to the host.
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # URL is set per-service in each service's application.yml (different DB
+    # name per service). Shared config carries only credentials + driver.
+    username: root
+    password: root
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      acks: all
+      enable-idempotence: true
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+
+management:
+  tracing:
+    sampling:
+      # Dev/demo: sample every request. Lower this (e.g. 0.1) under real load.
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
+
+eureka:
+  client:
+    # Dev/demo: pick up registry changes faster than the 30s defaults.
+    registry-fetch-interval-seconds: 5
+  instance:
+    lease-renewal-interval-in-seconds: 5
+    lease-expiration-duration-in-seconds: 15

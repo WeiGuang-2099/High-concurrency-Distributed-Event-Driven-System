@@ -29,6 +29,9 @@ import java.nio.file.Paths;
         "spring.kafka.admin.auto-create=false",
         // StockReleaseConsumer (@RabbitListener) must not try to connect to RabbitMQ.
         "spring.rabbitmq.listener.simple.auto-startup=false",
+        // Keep the test hermetic: no config-server fetch, no Eureka registration.
+        "spring.cloud.config.enabled=false",
+        "eureka.client.enabled=false",
         "management.tracing.enabled=false"
 })
 public abstract class AbstractTicketServiceIT {

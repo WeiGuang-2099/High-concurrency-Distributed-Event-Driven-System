@@ -47,7 +47,11 @@ import static org.mockito.Mockito.verify;
  * append keeps failing must end up on the dead-letter topic instead of being
  * acked away (the 2026-07-04 event-loss fix, verified over the wire).
  */
-@SpringBootTest(properties = "management.tracing.enabled=false")
+@SpringBootTest(properties = {
+        // Keep the test hermetic: no config-server fetch, no Eureka registration.
+        "spring.cloud.config.enabled=false",
+        "eureka.client.enabled=false",
+        "management.tracing.enabled=false"})
 class EventStorePipelineIT {
 
     static final KafkaContainer KAFKA =

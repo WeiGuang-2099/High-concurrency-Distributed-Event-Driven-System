@@ -38,7 +38,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest(classes = SettlementSagaIT.SagaTestApp.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
-        properties = "management.tracing.enabled=false")
+        properties = {
+                // Keep the test hermetic: no config-server fetch, no Eureka registration.
+                "spring.cloud.config.enabled=false",
+                "eureka.client.enabled=false",
+                "management.tracing.enabled=false"})
 class SettlementSagaIT {
 
     private static final String RESERVE_URL = "/api/tickets/internal/settle-reserve";

@@ -2,14 +2,13 @@ server:
   port: 8081
 
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: localhost:8848
-        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
-        # registered and the host-run gateway cannot reach it (503).
-        ip: 127.0.0.1
-  # Local profile defaults (overridden by Nacos shared-configs in production)
+  application:
+    name: auction-service
+  config:
+    # Centralized config from config-server; optional so the service still boots
+    # on the local defaults below when the config server is down.
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  # Local profile defaults (overridden by config-server in production)
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/auction_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
@@ -69,3 +68,13 @@ auction:
 logging:
   level:
     com.auction.auction: INFO
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+  instance:
+    # Single-host dev: register the loopback IP, otherwise a WSL/virtual adapter
+    # IP gets registered and the host-run gateway cannot reach it (503).
+    prefer-ip-address: true
+    ip-address: 127.0.0.1

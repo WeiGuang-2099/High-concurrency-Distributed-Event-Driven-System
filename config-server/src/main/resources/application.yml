@@ -1,0 +1,30 @@
+server:
+  port: 8888
+
+spring:
+  application:
+    name: config-server
+  profiles:
+    # native serves the config-repo/ directory of this repository directly from
+    # the filesystem (dev default: uncommitted edits are picked up immediately).
+    # Switch to the git backend for deployed environments:
+    #   CONFIG_SERVER_PROFILE=git CONFIG_GIT_URI=<repo-url> CONFIG_GIT_LABEL=<branch>
+    active: ${CONFIG_SERVER_PROFILE:native}
+  cloud:
+    config:
+      server:
+        native:
+          # Both locations so the server finds config-repo/ whether it is started
+          # from the repository root (java -jar) or the module directory (mvn).
+          search-locations: file:./config-repo,file:../config-repo
+        git:
+          uri: ${CONFIG_GIT_URI:https://github.com/WeiGuang-2099/High-concurrency-Distributed-Event-Driven-System.git}
+          search-paths: config-repo
+          default-label: ${CONFIG_GIT_LABEL:main}
+          clone-on-start: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

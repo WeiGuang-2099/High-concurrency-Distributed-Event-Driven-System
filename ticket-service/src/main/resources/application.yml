@@ -2,13 +2,12 @@ server:
   port: 8082
 
 spring:
-  cloud:
-    nacos:
-      discovery:
-        server-addr: localhost:8848
-        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
-        # registered and the host-run gateway cannot reach it (503).
-        ip: 127.0.0.1
+  application:
+    name: ticket-service
+  config:
+    # Centralized config from config-server; optional so the service still boots
+    # on the local defaults below when the config server is down.
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/ticket_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
@@ -66,3 +65,13 @@ mybatis-plus:
 logging:
   level:
     com.auction.ticket: INFO
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+  instance:
+    # Single-host dev: register the loopback IP, otherwise a WSL/virtual adapter
+    # IP gets registered and the host-run gateway cannot reach it (503).
+    prefer-ip-address: true
+    ip-address: 127.0.0.1

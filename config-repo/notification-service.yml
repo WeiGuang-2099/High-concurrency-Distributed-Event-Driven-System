@@ -1,3 +1,5 @@
+# Notification-specific centralized config (was Nacos shared-jwt.yml).
+# The JWT public key authenticates WebSocket connections.
 jwt:
   public-key: |-
     -----BEGIN CERTIFICATE-----

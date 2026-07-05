@@ -22,7 +22,6 @@
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <spring-cloud.version>2023.0.1</spring-cloud.version>
-        <spring-cloud-alibaba.version>2022.0.0.0</spring-cloud-alibaba.version>
         <mybatis-plus.version>3.5.6</mybatis-plus.version>
         <lombok.version>1.18.30</lombok.version>
         <nimbus-jose-jwt.version>9.37.3</nimbus-jose-jwt.version>
@@ -36,6 +35,8 @@
 
     <modules>
         <module>auction-common</module>
+        <module>eureka-server</module>
+        <module>config-server</module>
         <module>gateway-service</module>
         <module>user-service</module>
         <module>auction-service</module>
@@ -52,15 +53,6 @@
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
                 <version>${spring-cloud.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!-- Spring Cloud Alibaba BOM -->
-            <dependency>
-                <groupId>com.alibaba.cloud</groupId>
-                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
-                <version>${spring-cloud-alibaba.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -96,16 +88,8 @@
         </dependencies>
     </dependencyManagement>
 
-    <!-- Dependencies inherited by ALL modules. Every service is a Nacos client and
-         relies on bootstrap.yml for shared config. Spring Cloud 2020+ only processes
-         bootstrap.yml when spring-cloud-starter-bootstrap is on the classpath; without
-         it the apps fail to start with "No spring.config.import property has been defined". -->
+    <!-- Dependencies inherited by ALL modules. -->
     <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-bootstrap</artifactId>
-        </dependency>
-
         <!-- Observability, inherited by all modules. Distributed tracing via Micrometer
              Tracing + Brave, spans reported to Zipkin; structured JSON logs to Logstash.
              The trace/span IDs Brave puts in the SLF4J MDC are what tie a Zipkin trace to

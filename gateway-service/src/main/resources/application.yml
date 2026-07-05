@@ -2,13 +2,13 @@ server:
   port: 8080
 
 spring:
+  application:
+    name: gateway-service
+  config:
+    # Centralized config from config-server; optional so the gateway still boots
+    # on the local defaults below when the config server is down.
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
   cloud:
-    nacos:
-      discovery:
-        server-addr: localhost:8848
-        # Single-host dev: pin loopback, otherwise a WSL/virtual adapter IP gets
-        # registered and the host-run gateway cannot reach it (503).
-        ip: 127.0.0.1
     gateway:
       discovery:
         locator:
@@ -79,6 +79,16 @@ management:
 logging:
   level:
     org.springframework.cloud.gateway: INFO
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+  instance:
+    # Single-host dev: register the loopback IP, otherwise a WSL/virtual adapter
+    # IP gets registered and other services cannot reach the gateway.
+    prefer-ip-address: true
+    ip-address: 127.0.0.1
 
 jwt:
   public-key: |-

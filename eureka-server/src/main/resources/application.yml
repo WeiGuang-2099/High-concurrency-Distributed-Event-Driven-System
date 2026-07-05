@@ -1,0 +1,31 @@
+server:
+  port: 8761
+
+spring:
+  application:
+    name: eureka-server
+
+eureka:
+  client:
+    # Standalone registry: this node neither registers with nor fetches from itself.
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  server:
+    # Dev/demo: evict dead instances quickly instead of the 60s default, and do
+    # not enter self-preservation when single services are restarted.
+    enable-self-preservation: false
+    eviction-interval-timer-in-ms: 15000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    # Quieten the periodic "Running the evict task" noise.
+    com.netflix.eureka: WARN
+    com.netflix.discovery: WARN

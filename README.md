@@ -11,8 +11,9 @@ A real-time auction and ticketing platform built with a distributed event-driven
 | Layer | Technology | Role in this project |
 |-------|-----------|---------------------|
 | **Language / Framework** | Java 17, Spring Boot 3.2.5 | Application runtime |
-| **Microservices** | Spring Cloud 2023.0.1, Spring Cloud Alibaba 2022.0.0.0 | Service discovery, config, gateway |
-| **Service Discovery / Config** | Nacos v2.3.0 | Service registry + shared configuration center |
+| **Microservices** | Spring Cloud 2023.0.1 | Service discovery, config, gateway |
+| **Service Discovery** | Netflix Eureka (Spring Cloud Netflix) | Service registry for gateway routing + Feign calls |
+| **Centralized Config** | Spring Cloud Config Server | Shared configuration from the `config-repo/` directory (git-backed) |
 | **API Gateway** | Spring Cloud Gateway | Routing, JWT authentication, CORS, traceId injection |
 | **Message Broker (Events)** | Apache Kafka 3.6.1 (KRaft mode) | Domain event propagation (bid placed, stock reserved, order created, etc.) |
 | **Message Broker (Delayed)** | RabbitMQ 3 + delayed-message-exchange plugin | Order/reservation timeout (30 min auto-cancel) |
@@ -119,8 +120,11 @@ Scheduler (every 1s):
 ├── notification-service/      # Kafka event consumers, WebSocket (STOMP) push, notification persistence
 ├── event-store-service/       # MongoDB event sourcing, CQRS projections, snapshot + replay API
 ├── frontend/                  # React 18 + TypeScript SPA (Ant Design, React Query, WebSocket)
-├── deploy/                    # MySQL init scripts, Nacos configs, Logstash pipeline
-└── docker-compose.yml         # All infrastructure: MySQL, Redis, MongoDB, Kafka, RabbitMQ, Nacos, ELK, Zipkin
+├── eureka-server/             # Service registry (Netflix Eureka, :8761)
+├── config-server/             # Centralized config (Spring Cloud Config, :8888, serves config-repo/)
+├── config-repo/               # Centralized configuration served by config-server
+├── deploy/                    # MySQL init scripts, RabbitMQ image, Logstash pipeline
+└── docker-compose.yml         # Infrastructure: MySQL, Redis, MongoDB, Kafka, RabbitMQ, ELK, Zipkin
 ```
 
 ## Core Technical Highlights
@@ -179,7 +183,7 @@ The flash-sale (ticket reserve) path is load-tested with [k6](https://k6.io). Te
 docker-compose up -d
 ```
 
-This starts 11 containers: MySQL, Redis, MongoDB, Kafka (KRaft), RabbitMQ, Nacos, Zipkin, Elasticsearch, Logstash, Kibana. Wait ~2 minutes for all health checks to pass.
+This starts 10 containers: MySQL, Redis, MongoDB, Kafka (KRaft), RabbitMQ, Zipkin, Elasticsearch, Logstash, Kibana. Wait ~2 minutes for all health checks to pass.
 
 ### Build and Run Services
 
@@ -187,7 +191,12 @@ This starts 11 containers: MySQL, Redis, MongoDB, Kafka (KRaft), RabbitMQ, Nacos
 # Build all services
 mvn clean package -DskipTests
 
-# Run each service (in separate terminals)
+# 1. Start the registry and the config server first (from the repo root, so the
+#    config server finds config-repo/)
+java -jar eureka-server/target/eureka-server-1.0.0-SNAPSHOT.jar
+java -jar config-server/target/config-server-1.0.0-SNAPSHOT.jar
+
+# 2. Run each business service (in separate terminals)
 java -jar user-service/target/user-service-1.0.0-SNAPSHOT.jar
 java -jar auction-service/target/auction-service-1.0.0-SNAPSHOT.jar
 java -jar ticket-service/target/ticket-service-1.0.0-SNAPSHOT.jar
@@ -218,8 +227,8 @@ java -jar user-service/target/user-service-1.0.0-SNAPSHOT.jar --spring.profiles.
 ```
 
 Without the profile, logs stay on the console (so a missing Logstash never spams reconnect
-errors). The tracing endpoint and sampling live in Nacos `shared-observability.yml`
-(published by `deploy/nacos/import-configs.ps1`).
+errors). The tracing endpoint and sampling live in `config-repo/application.yml`, served to
+every service by the config server.
 
 ### Run Frontend
 
@@ -235,7 +244,7 @@ npm run dev
 |---------|-----|
 | Frontend | http://localhost:5173 |
 | API Gateway | http://localhost:8080 |
-| Nacos Console | http://localhost:8848/nacos |
+| Eureka Dashboard | http://localhost:8761 |
 | Zipkin UI | http://localhost:9411 |
 | Kibana | http://localhost:5601 |
 | RabbitMQ Management | http://localhost:15672 (guest/guest) |
@@ -251,6 +260,8 @@ npm run dev
 | notification-service | 8084 |
 | event-store-service | 8085 |
 | user-service | 8086 |
+| eureka-server | 8761 |
+| config-server | 8888 |
 
 ## API Overview
 
@@ -362,7 +373,7 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| P0 | Project skeleton, Docker Compose, MySQL init, Nacos, Gateway | Done |
+| P0 | Project skeleton, Docker Compose, MySQL init, service discovery, Gateway | Done |
 | P1 | User service (registration, JWT auth) | Done |
 | P2 | Auction service (CRUD, atomic bidding, lifecycle scheduler) | Done |
 | P3 | Ticket service (Lua stock deduction, reserve/confirm/cancel) | Done |
@@ -382,4 +393,3 @@ All credentials below are demo defaults for local development only:
 | MySQL | root | root |
 | MongoDB | root | root |
 | RabbitMQ | guest | guest |
-| Nacos | (auth disabled) | - |
