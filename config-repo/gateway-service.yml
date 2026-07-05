@@ -1,5 +1,15 @@
 # Gateway-specific centralized config (was Nacos shared-jwt.yml).
 # The JWT public key verifies tokens issued by user-service.
+
+# Per-user token-bucket rates for the hot-path rate limiter (routes are declared in
+# the gateway's application.yml). Uncomment to override the defaults at runtime.
+#rate-limit:
+#  reserve:
+#    replenish: 5   # tokens per second
+#    burst: 10      # bucket capacity
+#  bid:
+#    replenish: 10
+#    burst: 20
 jwt:
   public-key: |-
     -----BEGIN CERTIFICATE-----

@@ -109,6 +109,36 @@ variant serializes every reserve on the row lock for the *whole* transaction (lo
 atomically in memory and only touches MySQL for the (still row-contended but shorter) write, so the lock
 is held for less of each request — hence higher throughput and a tighter latency tail.
 
+## Scenario 4 — Gateway per-user rate limiting (Redis token bucket)
+
+Run 2026-07-06. Unlike Scenarios 1-3 (service benchmarked in isolation), this one goes **through
+the gateway on :8080** — that is where the limiter lives. Stack: eureka-server, config-server,
+gateway-service, user-service, ticket-service + Docker infra. The hot write routes
+(`POST /api/tickets/reserve`, `POST /api/auctions/{id}/bids`) carry Spring Cloud Gateway's
+`RequestRateLimiter` with the Redis token-bucket implementation, keyed by the JWT-derived
+`X-User-Id` header. Reserve budget: **replenish 5 tokens/s, burst 10, per user**.
+
+Two concurrent scenarios, all with real JWTs (users registered + logged in through the gateway
+during setup):
+
+| scenario | load | passed limiter | throttled (429) |
+|---|---|---|---|
+| hammer — 1 user | 30 req/s x 20 s = 601 requests | **106** | **495** |
+| compliant — 5 users | 2 req/s each x 20 s = 200 requests | 200 | **0** |
+
+- **The bucket math holds.** One user firing 30 req/s got 106 requests through — the theoretical
+  budget is burst 10 + replenish 5/s x 20 s = **110**. The other 495 were rejected at the gateway
+  with `429` + `X-RateLimit-*` headers and **never reached ticket-service**.
+- **Per-user isolation.** Five compliant users sharing the same 20-second window saw **zero** 429s:
+  one scripted abuser cannot starve legitimate buyers, because every user has an independent bucket
+  (keyed by the `X-User-Id` the gateway derives from the verified JWT — clients cannot spoof it).
+- Zero unexpected statuses (`rl_errors = 0`).
+
+The same behavior is pinned down in `GatewayRateLimitIT` (gateway module, runs in `mvn verify`
+against a real Redis container): burst-then-429 per user, throttled requests never reaching the
+backend, per-user isolation, an independent bucket on the bid route, and non-hot routes bypassing
+the limiter entirely.
+
 ## Reproduce
 
 First start infra (Docker) and launch ticket-service **with the required flags** from
@@ -123,6 +153,10 @@ k6 run -e STOCK=10000 -e ITERATIONS=10000 -e VUS=200 loadtest/ticket-rush.js
 # head-to-head comparison: optimistic Redis-Lua vs pessimistic SELECT ... FOR UPDATE
 k6 run -e ENDPOINT=/api/tickets/reserve              -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
 k6 run -e ENDPOINT=/api/tickets/reserve-pessimistic  -e STOCK=8000 -e ITERATIONS=8000 -e VUS=50 loadtest/ticket-rush.js
+
+# gateway per-user rate limiting (Scenario 4) - needs eureka-server, config-server,
+# gateway-service, user-service and ticket-service running (no special Tomcat flags):
+k6 run loadtest/gateway-rate-limit.js
 ```
 
 > All four runs above were re-verified on 2026-06-26 (k6 v2.0.0) — zero oversell, zero `reserve_errors`
@@ -130,6 +164,8 @@ k6 run -e ENDPOINT=/api/tickets/reserve-pessimistic  -e STOCK=8000 -e ITERATIONS
 > out-of-stock **400**s (an expected business rejection) as non-2xx; the script's own `reserve_errors`
 > counter (5xx / unexpected only) is the meaningful error metric.
 
-> Note: this run measured the service in isolation. Running all 7 services + full infra on a 15.7 GB
-> machine exhausts RAM (free ~1.4 GB), which destabilizes the gateway's Nacos/Redis connections — so
-> gateway-routed end-to-end load testing needs a bigger host or fewer co-located services.
+> Note: Scenarios 1-3 measured the service in isolation. Running all 7 services + full infra on a
+> 15.7 GB machine exhausts RAM (free ~1.4 GB), which destabilizes the gateway's discovery/Redis
+> connections — so gateway-routed *throughput* benchmarks need a bigger host or fewer co-located
+> services. Scenario 4 is gateway-routed but runs at a deliberately modest 40 req/s with only five
+> JVMs up, which this machine handles fine.

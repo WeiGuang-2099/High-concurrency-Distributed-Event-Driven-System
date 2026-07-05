@@ -15,6 +15,37 @@ spring:
           enabled: true
           lower-case-service-id: true
       routes:
+        # Hot write paths get a per-user Redis token bucket (RequestRateLimiter).
+        # order: -1 makes these match ahead of the service-wide routes below
+        # (default order 0). Keyed by the JWT-derived X-User-Id header via
+        # userKeyResolver; over-limit requests get 429 + X-RateLimit-* headers
+        # without ever reaching the service. Rates are per user, per second.
+        - id: ticket-reserve-limited
+          uri: lb://ticket-service
+          order: -1
+          predicates:
+            - Path=/api/tickets/reserve,/api/tickets/reserve-pessimistic
+            - Method=POST
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: ${rate-limit.reserve.replenish:5}
+                redis-rate-limiter.burstCapacity: ${rate-limit.reserve.burst:10}
+
+        - id: auction-bid-limited
+          uri: lb://auction-service
+          order: -1
+          predicates:
+            - Path=/api/auctions/*/bids
+            - Method=POST
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: ${rate-limit.bid.replenish:10}
+                redis-rate-limiter.burstCapacity: ${rate-limit.bid.burst:20}
+
         - id: auction-service
           uri: lb://auction-service
           predicates:

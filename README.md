@@ -14,7 +14,7 @@ A real-time auction and ticketing platform built with a distributed event-driven
 | **Microservices** | Spring Cloud 2023.0.1 | Service discovery, config, gateway |
 | **Service Discovery** | Netflix Eureka (Spring Cloud Netflix) | Service registry for gateway routing + Feign calls |
 | **Centralized Config** | Spring Cloud Config Server | Shared configuration from the `config-repo/` directory (git-backed) |
-| **API Gateway** | Spring Cloud Gateway | Routing, JWT authentication, CORS, traceId injection |
+| **API Gateway** | Spring Cloud Gateway | Routing, JWT authentication, per-user rate limiting (Redis token bucket), CORS, traceId injection |
 | **Message Broker (Events)** | Apache Kafka 3.6.1 (KRaft mode) | Domain event propagation (bid placed, stock reserved, order created, etc.) |
 | **Message Broker (Delayed)** | RabbitMQ 3 + delayed-message-exchange plugin | Order/reservation timeout (30 min auto-cancel) |
 | **Relational DB** | MySQL 8.0 + MyBatis-Plus 3.5.6 | Transactional data (users, auctions, tickets, orders) |
@@ -164,6 +164,7 @@ The flash-sale (ticket reserve) path is load-tested with [k6](https://k6.io). Te
 | **Oversell correctness** | 200 concurrent VUs · 2,000 reserve attempts on 100 stock | **Exactly 100 sold, 0 oversold, 0 server errors** · p99 683 ms · ~921 req/s |
 | **Sustained throughput** | 200 VUs · 10,000 reserves on one hot stock row | **10,000 / 10,000 succeeded, 0 oversold** · ~261 req/s · p99 1.17 s |
 | **Optimistic vs pessimistic** | 50 VUs · 8,000 reserves · Redis-Lua vs `SELECT … FOR UPDATE` | **Redis-Lua ~282 req/s vs pessimistic ~185 req/s (~1.5x)** · both 0 oversold |
+| **Gateway rate limiting** | Through the gateway: 1 user at 30 req/s vs 5 users at 2 req/s each (per-user Redis token bucket: 5/s + burst 10) | **Abuser: 106 of 601 passed (theory 110), 495 got 429; compliant users: zero 429s** |
 
 - **Oversell is verified by a post-run invariant** (`reserved + sold ≤ total`), not assumed — and the Redis decrement count always matches MySQL's `reserved_quantity`, so the two stores never diverge under saturation.
 - **The optimistic/pessimistic comparison quantifies a design tradeoff:** moving the contention check into a Redis Lua script shortens how long each request holds the MySQL row lock, yielding ~1.5x throughput over `SELECT … FOR UPDATE` at equal correctness.
@@ -380,8 +381,8 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 | P4 | Order service (state machine, payment, settlement compensation saga) | Done |
 | P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
-| P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing and structured JSON logging to ELK done; Sentinel rate limiting + Kibana dashboards pending |
-| P8 | Testing (unit, integration, K6 load tests) | 86 unit tests + k6 ticket-rush load tests done (zero oversell verified, optimistic-vs-pessimistic benchmarked); integration tests and auction-bid load test pending |
+| P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing, structured JSON logging to ELK, and gateway per-user rate limiting (Spring Cloud Gateway RequestRateLimiter + Redis token bucket) done; Kibana dashboards pending |
+| P8 | Testing (unit, integration, K6 load tests) | Unit tests + Testcontainers integration tests (`mvn verify`) + k6 load tests done (zero oversell verified, optimistic-vs-pessimistic benchmarked, rate limiting verified); auction-bid load test pending |
 | P9 | README, architecture diagrams, demo guide | This README; diagrams and demo guide pending |
 
 ## Default Credentials
