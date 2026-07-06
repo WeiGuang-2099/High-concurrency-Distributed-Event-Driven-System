@@ -91,8 +91,11 @@ class WebSocketManager {
     }
     handlerSet.add(handler as MessageHandler);
 
-    // If client is connected, subscribe immediately.
-    if (this.client?.active && !this.subscriptions.has(destination)) {
+    // Subscribe immediately only if the STOMP session is established.
+    // `client.active` is true from activate() onward (still connecting);
+    // client.subscribe() throws unless `client.connected` is true. Handlers
+    // registered while disconnected are picked up by onConnect's resubscribe.
+    if (this.client?.connected && !this.subscriptions.has(destination)) {
       this.subscribeInternal(destination, handlerSet);
     }
 
@@ -134,14 +137,14 @@ class WebSocketManager {
    * Check if the client is currently connected.
    */
   get isConnected(): boolean {
-    return this.client?.active ?? false;
+    return this.client?.connected ?? false;
   }
 
   /**
    * Internal: create a STOMP subscription for a destination.
    */
   private subscribeInternal(destination: string, handlerSet: Set<MessageHandler>): void {
-    if (!this.client?.active) return;
+    if (!this.client?.connected) return;
     if (this.subscriptions.has(destination)) return;
 
     const sub = this.client.subscribe(destination, (message) => {
