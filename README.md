@@ -4,7 +4,7 @@
 
 A real-time auction and ticketing platform built with a distributed event-driven architecture. The system handles two high-concurrency scenarios: **flash auctions** (thousands of users bidding simultaneously) and **ticket rushes** (thousands of users buying limited stock). Both scenarios are protected against overselling and data races using Redis Lua scripts, MySQL optimistic locking, and transactional compensation.
 
-> **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), and a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency. See [Performance & Load Testing](#performance--load-testing).
+> **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency, and a pure-Redis auction-bid path sustaining **~3,560 bids/s with zero lost bids**. See [Performance & Load Testing](#performance--load-testing).
 
 ## Tech Stack
 
@@ -157,17 +157,19 @@ The `event-store-service` maintains an append-only event log in MongoDB:
 
 ## Performance & Load Testing
 
-The flash-sale (ticket reserve) path is load-tested with [k6](https://k6.io). Tests hit `ticket-service` **in isolation** on a single laptop (Java 21, Tomcat, HikariCP) with MySQL / Redis / Kafka / RabbitMQ in Docker — isolating the service under test from gateway, JWT, and other JVMs is the correct setup for a benchmark. **Full methodology, environment, and raw metrics: [loadtest/REPORT.md](loadtest/REPORT.md).**
+The two hot write paths — ticket reserve (flash sale) and auction bid — are load-tested with [k6](https://k6.io). Service benchmarks hit the service **in isolation** on a single laptop (Java 21, Tomcat, HikariCP) with MySQL / Redis / Kafka / RabbitMQ in Docker — isolating the service under test from gateway, JWT, and other JVMs is the correct setup for a benchmark. **Full methodology, environment, and raw metrics: [loadtest/REPORT.md](loadtest/REPORT.md).**
 
 | Scenario | Setup | Result |
 |----------|-------|--------|
 | **Oversell correctness** | 200 concurrent VUs · 2,000 reserve attempts on 100 stock | **Exactly 100 sold, 0 oversold, 0 server errors** · p99 683 ms · ~921 req/s |
 | **Sustained throughput** | 200 VUs · 10,000 reserves on one hot stock row | **10,000 / 10,000 succeeded, 0 oversold** · ~261 req/s · p99 1.17 s |
 | **Optimistic vs pessimistic** | 50 VUs · 8,000 reserves · Redis-Lua vs `SELECT … FOR UPDATE` | **Redis-Lua ~282 req/s vs pessimistic ~185 req/s (~1.5x)** · both 0 oversold |
+| **Auction bid throughput** | 200 VUs · 20,000 bids on **one** auction (pure-Redis Lua CAS, async Kafka→MySQL persistence) | **~3,560 bids/s, p95 71 ms, 0 errors** · 1,064 accepted bids, **0 lost** · Redis == MySQL snapshot == max bid row |
 | **Gateway rate limiting** | Through the gateway: 1 user at 30 req/s vs 5 users at 2 req/s each (per-user Redis token bucket: 5/s + burst 10) | **Abuser: 106 of 601 passed (theory 110), 495 got 429; compliant users: zero 429s** |
 
 - **Oversell is verified by a post-run invariant** (`reserved + sold ≤ total`), not assumed — and the Redis decrement count always matches MySQL's `reserved_quantity`, so the two stores never diverge under saturation.
 - **The optimistic/pessimistic comparison quantifies a design tradeoff:** moving the contention check into a Redis Lua script shortens how long each request holds the MySQL row lock, yielding ~1.5x throughput over `SELECT … FOR UPDATE` at equal correctness.
+- **The bid path shows the other end of the spectrum (~13x the reserve success path):** a reserve success writes MySQL synchronously on the request thread (~261 req/s); a bid touches only Redis (Lua compare-and-set on the highest-bid hash) and defers durability to Kafka → consumer → MySQL (~3,560 req/s). The post-run invariant proves the deferral is safe: every accepted bid reached MySQL and all three views of the highest price converged.
 
 ## Getting Started
 
@@ -358,17 +360,14 @@ mvn test
 
 ### Load Tests (k6)
 
-The ticket-rush flash-sale path is benchmarked end-to-end with k6 — **zero oversell under 200 concurrent VUs**, plus an optimistic-vs-pessimistic throughput comparison. Headline numbers are in [Performance & Load Testing](#performance--load-testing); full report in [loadtest/REPORT.md](loadtest/REPORT.md).
+Both hot write paths are benchmarked end-to-end with k6 — **zero oversell under 200 concurrent VUs** on ticket reserve (plus an optimistic-vs-pessimistic comparison), and **~3,560 bids/s with zero lost bids** on the auction-bid path. Headline numbers are in [Performance & Load Testing](#performance--load-testing); full report in [loadtest/REPORT.md](loadtest/REPORT.md).
 
 ```bash
 # oversell proof: 2,000 concurrent reserve attempts on 100 stock
 k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
+# auction-bid throughput + no-lost-bids invariant (see loadtest/REPORT.md for the service flags)
+k6 run --local-ips=127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5 -e ITERATIONS=20000 -e VUS=200 loadtest/auction-bid.js
 ```
-
-### Not Yet Implemented
-
-- Integration tests with Testcontainers (Kafka E2E, settlement saga compensation/retry, Redis Lua concurrency)
-- k6 load test for the auction-bid path (the ticket-reserve path is done — see above)
 
 ## Current Status
 
@@ -382,7 +381,7 @@ k6 run -e STOCK=100 -e ITERATIONS=2000 -e VUS=200 loadtest/ticket-rush.js
 | P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
 | P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing, structured JSON logging to ELK, and gateway per-user rate limiting (Spring Cloud Gateway RequestRateLimiter + Redis token bucket) done; Kibana dashboards pending |
-| P8 | Testing (unit, integration, K6 load tests) | Unit tests + Testcontainers integration tests (`mvn verify`) + k6 load tests done (zero oversell verified, optimistic-vs-pessimistic benchmarked, rate limiting verified); auction-bid load test pending |
+| P8 | Testing (unit, integration, K6 load tests) | Done — unit tests + Testcontainers integration tests (`mvn verify`) + k6 load tests (zero oversell, optimistic-vs-pessimistic, gateway rate limiting, auction-bid throughput with no-lost-bids invariant) |
 | P9 | README, architecture diagrams, demo guide | This README; diagrams and demo guide pending |
 
 ## Default Credentials

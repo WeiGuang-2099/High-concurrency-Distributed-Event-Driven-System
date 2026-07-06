@@ -1,8 +1,11 @@
-# Load Test Report — Ticket Reserve (Flash-Sale Path)
+# Load Test Report
 
-Tool: [k6](https://k6.io) v2.0.0. Target: `ticket-service` directly on `:8082`, injecting the
-`X-User-*` headers the gateway normally adds. Hitting the service directly isolates it under
-test (no gateway, JWT, or other JVMs competing for CPU) — the correct setup for a benchmark.
+Tool: [k6](https://k6.io) v2.0.0. Scenarios 1-3 benchmark the ticket reserve (flash-sale) path
+against `ticket-service` directly on `:8082`; Scenario 4 proves the gateway per-user rate
+limiter (through the gateway, by design); Scenario 5 benchmarks the auction-bid path against
+`auction-service` directly on `:8081`. Service benchmarks inject the `X-User-*` headers the
+gateway normally adds — hitting the service directly isolates it under test (no gateway, JWT,
+or other JVMs competing for CPU), the correct setup for a benchmark.
 
 ## Environment
 
@@ -86,6 +89,10 @@ synchronous RabbitMQ send, so higher latency is expected. Correctness (zero over
 - **Optimistic (Redis-Lua) beats pessimistic (`SELECT ... FOR UPDATE`) by ~1.5x throughput** at equal
   correctness (Scenario 3): moving the contention check into Redis shortens how long each request holds
   the MySQL row lock.
+- **Removing MySQL from the request path entirely is worth ~13.6x** (Scenario 5): the auction-bid
+  path answers from a Redis Lua compare-and-set and persists asynchronously via Kafka, sustaining
+  ~3,560 bids/s against reserve's ~261 req/s — with a post-run invariant proving zero accepted
+  bids were lost on the way to MySQL.
 
 ## Scenario 3 — Optimistic (Redis-Lua) vs Pessimistic-lock head-to-head
 
@@ -139,6 +146,54 @@ against a real Redis container): burst-then-429 per user, throttled requests nev
 backend, per-user isolation, an independent bucket on the bid route, and non-hot routes bypassing
 the limiter entirely.
 
+## Scenario 5 — Auction bid throughput (pure-Redis hot path)
+
+Run 2026-07-06. `VUS=200, ITERATIONS=20000`, every bid against **one** auction, hitting
+auction-service directly on `:8081` (gateway deliberately bypassed — the per-user bid limiter
+is proven separately in Scenario 4). The bid hot path never touches MySQL: a Lua script on the
+`auction:{id}:highest` hash atomically rejects any bid not strictly above the current highest,
+and accepted bids are persisted **off the request path** (Kafka `BidPlacedEvent` → bid-persistor
+consumer → MySQL `bid` row + compare-and-set snapshot update, deduplicated by event id).
+
+Each k6 iteration bids a unique, globally increasing amount (start price + 0.01 x iteration
+number), so out-of-order arrivals lose the compare-and-set race exactly like real concurrent
+bidders sniping one item.
+
+| metric | value |
+|---|---|
+| **throughput** | **~3,560 bids/s** sustained (20,000 bids in 5.6 s) |
+| latency | med = 57 ms, p95 = 71 ms, max = 87 ms (at 200-VU saturation) |
+| bid_accepted (201, new highest) | 1,064 |
+| bid_too_low (400, lost the CAS race) | 18,936 |
+| bid_errors (5xx / unexpected) | **0** |
+| **lost bids** (Redis 201s vs MySQL rows) | **0** — 1,064 accepted == 1,064 persisted |
+| final highest: Redis hash / MySQL snapshot / max bid row | **300.00 == 300.00 == 300.00** |
+| Kafka consumer drain time after the burst | ~14 s |
+
+- **~13.6x the reserve success path** (~3,560 vs ~261 req/s, Scenario 2, same hardware). The
+  two paths bracket a design tradeoff: a reserve success runs its MySQL insert + hot-row
+  `UPDATE` synchronously on the request thread (strong synchronous consistency); a bid answers
+  from Redis alone and defers durability to Kafka. The post-run invariants are what make that
+  deferral defensible.
+- **Invariants verified after the run** (in `teardown()` + `handleSummary()`):
+  - *Monotonic highest*: the Lua script accepts only strictly-higher amounts, so all 1,064
+    persisted amounts are unique and the max equals the final highest — verified across every
+    persisted row.
+  - *No lost bids*: k6-counted 201 responses == MySQL `bid` rows (the async pipeline dropped
+    nothing; producer runs with `acks=all` + idempotence).
+  - *Convergence*: Redis highest hash == MySQL auction snapshot == max persisted bid row. The
+    Redis value is read through the public API by a probe bid at 0.01, whose `BID_TOO_LOW`
+    message echoes the current Redis highest.
+- med latency 57 ms at 200 VUs is queueing, not work: 200 concurrent / 3,560 req/s = 56 ms
+  (Little's law). Accepted bids complete in ~2 ms of server time.
+- **Client-side finding** (same family as the `accept-count` note above): Tomcat hard-closes
+  keep-alive connections on 4xx responses (`Http11Processor.statusDropsConnection`), so this
+  rejection-heavy workload costs the load generator a fresh connection per 400 — ~19k dials in
+  a few seconds exhausted Windows' 16,384 dynamic ports (diagnosed via 9k+ `TIME_WAIT` sockets
+  and a curl probe showing `Connection: close` on the 400s). Fix: spread VUs across loopback
+  source IPs with `--local-ips` (one port space each); the script fails a threshold if any dial
+  error slips through regardless.
+
 ## Reproduce
 
 First start infra (Docker) and launch ticket-service **with the required flags** from
@@ -157,12 +212,20 @@ k6 run -e ENDPOINT=/api/tickets/reserve-pessimistic  -e STOCK=8000 -e ITERATIONS
 # gateway per-user rate limiting (Scenario 4) - needs eureka-server, config-server,
 # gateway-service, user-service and ticket-service running (no special Tomcat flags):
 k6 run loadtest/gateway-rate-limit.js
+
+# auction bid throughput (Scenario 5) - start auction-service in isolation first:
+#   java -jar auction-service/target/auction-service-1.0.0-SNAPSHOT.jar \
+#     --server.tomcat.accept-count=1000 --server.tomcat.max-connections=4096 \
+#     --server.tomcat.threads.max=300 --server.tomcat.max-keep-alive-requests=-1 \
+#     --eureka.client.enabled=false --spring.cloud.config.enabled=false
+# (--local-ips works around the Tomcat-closes-on-4xx port exhaustion, see Scenario 5)
+k6 run --local-ips=127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5 -e ITERATIONS=20000 -e VUS=200 loadtest/auction-bid.js
 ```
 
-> All four runs above were re-verified on 2026-06-26 (k6 v2.0.0) — zero oversell, zero `reserve_errors`
-> on every run. Note k6's `http_req_failed` is high on the oversell run only because it counts the
-> out-of-stock **400**s (an expected business rejection) as non-2xx; the script's own `reserve_errors`
-> counter (5xx / unexpected only) is the meaningful error metric.
+> The Scenario 1-3 runs above were re-verified on 2026-06-26 (k6 v2.0.0) — zero oversell, zero
+> `reserve_errors` on every run. Note k6's `http_req_failed` is high on the oversell and bid runs
+> only because it counts expected business rejections (out-of-stock / bid-too-low **400**s) as
+> non-2xx; each script's own error counter (5xx / unexpected only) is the meaningful error metric.
 
 > Note: Scenarios 1-3 measured the service in isolation. Running all 7 services + full infra on a
 > 15.7 GB machine exhausts RAM (free ~1.4 GB), which destabilizes the gateway's discovery/Redis
