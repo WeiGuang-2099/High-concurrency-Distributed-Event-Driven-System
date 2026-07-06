@@ -6,6 +6,16 @@ A real-time auction and ticketing platform built with a distributed event-driven
 
 > **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency, and a pure-Redis auction-bid path sustaining **~3,560 bids/s with zero lost bids**. See [Performance & Load Testing](#performance--load-testing).
 
+## Screenshots
+
+Home — hot auctions (Redis-cached) with live countdowns:
+
+![Home page](docs/screenshots/home.png)
+
+Auction detail — bids validated atomically by a Redis Lua script; the bid history and current highest price update in real time via WebSocket (STOMP) push from the notification service (usernames masked server-side):
+
+![Auction detail page](docs/screenshots/auction-detail.png)
+
 ## Tech Stack
 
 | Layer | Technology | Role in this project |
