@@ -73,8 +73,11 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getURI().getPath();
 
-        // Skip auth for public endpoints and actuator
-        if (PUBLIC_PATHS.contains(path) || path.startsWith("/actuator")) {
+        // Skip auth for public endpoints and actuator. /ws/** is exempt at the
+        // HTTP layer because the browser WebSocket/SockJS handshake cannot set
+        // an Authorization header; notification-service validates the JWT on
+        // the STOMP CONNECT frame instead (WebSocketAuthInterceptor).
+        if (PUBLIC_PATHS.contains(path) || path.startsWith("/actuator") || path.startsWith("/ws/")) {
             return chain.filter(exchange);
         }
 

@@ -81,6 +81,16 @@ spring:
           filters:
             - StripPrefix=0
 
+        # SockJS/STOMP WebSocket endpoint. HTTP-level JWT is skipped for /ws/**
+        # (browser WS handshake cannot carry an Authorization header); auth is
+        # enforced by notification-service on the STOMP CONNECT frame instead.
+        - id: notification-websocket
+          uri: lb://notification-service
+          predicates:
+            - Path=/ws/**
+          filters:
+            - StripPrefix=0
+
       globalcors:
         cors-configurations:
           '[/**]':
