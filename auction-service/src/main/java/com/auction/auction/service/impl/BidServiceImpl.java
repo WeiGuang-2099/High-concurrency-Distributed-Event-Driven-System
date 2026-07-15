@@ -97,7 +97,20 @@ public class BidServiceImpl implements BidService {
                 .build();
     }
 
+    /**
+     * The Lua script has already accepted the bid, so the caller gets a 201 regardless of
+     * what happens here. A failed send therefore means Redis holds a highest bid that has
+     * no row in MySQL: on restart AuctionStateWarmer rebuilds Redis from the bid table and
+     * the bid disappears. Logging makes that visible; closing the window needs the send to
+     * become part of the same atomic step as the accept (transactional outbox).
+     */
     private void publish(Long auctionId, Object event) {
-        kafkaTemplate.send(KafkaTopics.AUCTION_EVENTS, String.valueOf(auctionId), event);
+        kafkaTemplate.send(KafkaTopics.AUCTION_EVENTS, String.valueOf(auctionId), event)
+                .whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        log.error("Bid accepted in Redis but event publish failed: auction={} event={}",
+                                auctionId, event.getClass().getSimpleName(), ex);
+                    }
+                });
     }
 }
