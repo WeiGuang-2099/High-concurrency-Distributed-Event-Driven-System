@@ -36,6 +36,12 @@ Auction detail — bids validated atomically by a Redis Lua script; the bid hist
 
 ## Architecture
 
+> **Why it looks like this:** the decisions behind this design — including two that reversed an
+> earlier choice — are recorded as [Architecture Decision Records](docs/adr/). Start there for
+> *why Redis Lua instead of a row lock* ([0002](docs/adr/0002-redis-lua-for-oversell-protection.md)),
+> *why Seata was removed* ([0003](docs/adr/0003-replace-seata-with-compensation-saga.md)), and
+> *how an accepted bid is made durable* ([0005](docs/adr/0005-redis-stream-outbox-for-bid-durability.md)).
+
 ```
                               ┌──────────────────────────┐
                               │    Frontend (React SPA)   │
