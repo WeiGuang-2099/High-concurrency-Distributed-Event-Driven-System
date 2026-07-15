@@ -33,6 +33,9 @@ public class BidHistoryProjection {
             if (payload instanceof BidPlacedEvent) {
                 BidPlacedEvent e = (BidPlacedEvent) payload;
                 repository.save(BidHistoryEntry.builder()
+                        // _id = eventId makes save() an upsert, so a redelivered event
+                        // rewrites its own row instead of appending a duplicate bid.
+                        .id(e.getEventId())
                         .eventId(e.getEventId())
                         .auctionId(e.getAuctionId())
                         .bidderId(e.getBidderId())

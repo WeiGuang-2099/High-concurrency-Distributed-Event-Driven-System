@@ -38,5 +38,14 @@ public class AuctionSummaryView {
 
     private int bidCount;
 
+    /**
+     * Highest auction-events offset already folded into this view. bidCount is an
+     * increment, so replaying an event would inflate it; every auction's events share
+     * the auction id as their Kafka key and therefore land on one partition, which
+     * makes the offset a usable per-auction watermark. Only valid while the topic
+     * keeps its partition count -- repartitioning remaps keys and invalidates it.
+     */
+    private Long lastOffset;
+
     private Instant updatedAt;
 }

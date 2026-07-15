@@ -67,6 +67,9 @@ public class OrderTimelineProjection {
     private void save(String eventId, Long orderId, Long userId, String status,
                       String eventType, String detail, java.time.Instant ts) {
         repository.save(OrderTimelineEntry.builder()
+                // _id = eventId makes save() an upsert, so a redelivered event rewrites
+                // its own row instead of appending a duplicate timeline entry.
+                .id(eventId)
                 .eventId(eventId)
                 .orderId(orderId)
                 .userId(userId)

@@ -58,6 +58,9 @@ public class StockMovementProjection {
                                      String movementType, Long userId, Long reservationId,
                                      int quantity) {
         return StockMovementEntry.builder()
+                // _id = the Kafka eventId makes save() an upsert, so a redelivered event
+                // rewrites its own row instead of appending a duplicate movement.
+                .id(base.getEventId())
                 .kafkaEventId(base.getEventId())
                 .eventId(eventId)
                 .ticketType(ticketType)

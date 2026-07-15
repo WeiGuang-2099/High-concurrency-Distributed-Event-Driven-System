@@ -90,7 +90,7 @@ class ProjectionErrorHandlingTest {
             when(repository.save(any(AuctionSummaryView.class)))
                     .thenThrow(new RuntimeException("mongo down"));
 
-            assertThatThrownBy(() -> projection.on(bidPlaced(), ack))
+            assertThatThrownBy(() -> projection.on(bidPlaced(), 1L, ack))
                     .isInstanceOf(RuntimeException.class)
                     .hasMessageContaining("mongo down");
 
@@ -102,7 +102,7 @@ class ProjectionErrorHandlingTest {
         void saveSuccess_acks() {
             when(repository.findByAuctionId(1L)).thenReturn(Optional.empty());
 
-            projection.on(bidPlaced(), ack);
+            projection.on(bidPlaced(), 1L, ack);
 
             verify(ack).acknowledge();
         }
