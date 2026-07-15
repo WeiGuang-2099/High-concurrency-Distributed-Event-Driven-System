@@ -55,11 +55,14 @@ public class AuctionSummaryProjection {
                 AuctionExpiredEvent e = (AuctionExpiredEvent) payload;
                 updateStatus(e.getAggregateId(), "EXPIRED");
             }
-        } catch (Exception e) {
-            log.error("AuctionSummaryProjection failed: {}", e.getMessage(), e);
-        } finally {
-            ack.acknowledge();
+        } catch (RuntimeException e) {
+            // Do NOT ack: a swallowed failure drops the update and bypasses the
+            // dead-letter recoverer, which only fires on exceptions that escape.
+            log.error("AuctionSummaryProjection failed for eventId={}, will retry/DLT: {}",
+                    payload.getEventId(), e.getMessage(), e);
+            throw e;
         }
+        ack.acknowledge();
     }
 
     private void upsert(String aggregateId, String status,

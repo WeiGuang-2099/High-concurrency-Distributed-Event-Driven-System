@@ -54,11 +54,14 @@ public class OrderTimelineProjection {
                 save(e.getEventId(), e.getOrderId(), e.getUserId(), "EXPIRED",
                         e.getEventType(), "Order expired", e.getTimestamp());
             }
-        } catch (Exception e) {
-            log.error("OrderTimelineProjection failed: {}", e.getMessage(), e);
-        } finally {
-            ack.acknowledge();
+        } catch (RuntimeException e) {
+            // Do NOT ack: a swallowed failure drops the row and bypasses the
+            // dead-letter recoverer, which only fires on exceptions that escape.
+            log.error("OrderTimelineProjection failed for eventId={}, will retry/DLT: {}",
+                    payload.getEventId(), e.getMessage(), e);
+            throw e;
         }
+        ack.acknowledge();
     }
 
     private void save(String eventId, Long orderId, Long userId, String status,

@@ -41,10 +41,13 @@ public class BidHistoryProjection {
                         .bidTime(e.getBidTime())
                         .build());
             }
-        } catch (Exception e) {
-            log.error("BidHistoryProjection failed: {}", e.getMessage(), e);
-        } finally {
-            ack.acknowledge();
+        } catch (RuntimeException e) {
+            // Do NOT ack: a swallowed failure drops the row and bypasses the
+            // dead-letter recoverer, which only fires on exceptions that escape.
+            log.error("BidHistoryProjection failed for eventId={}, will retry/DLT: {}",
+                    payload.getEventId(), e.getMessage(), e);
+            throw e;
         }
+        ack.acknowledge();
     }
 }
