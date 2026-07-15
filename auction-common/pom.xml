@@ -43,6 +43,16 @@
             <artifactId>spring-web</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- @Component / EnvironmentAware (UserContextFilter) and BindException
+             (GlobalExceptionHandler) live here. spring-web does NOT pull this in:
+             spring-context is an *optional* dependency of spring-web, so it is not
+             transitive. Must be declared explicitly or the module fails to compile
+             from a clean checkout. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>jakarta.servlet</groupId>
             <artifactId>jakarta.servlet-api</artifactId>
