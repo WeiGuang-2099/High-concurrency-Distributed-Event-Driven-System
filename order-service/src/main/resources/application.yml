@@ -39,6 +39,19 @@ spring:
     port: 5672
     username: guest
     password: guest
+    listener:
+      simple:
+        retry:
+          # Stops the infinite redelivery loop: without it a timeout message that throws
+          # is requeued and redelivered immediately, forever, and every order behind it
+          # stops expiring. Retry covers transient faults, then its default
+          # RejectAndDontRequeueRecoverer rejects fatally, routing to the DLX.
+          # Verified on the identical ticket-service queue by StockReleaseTimeoutIT.
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1s
+        # Belt and braces, not what does the work above; only matters if retry is disabled.
+        default-requeue-rejected: false
 
 management:
   endpoints:

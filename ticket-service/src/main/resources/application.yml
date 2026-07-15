@@ -49,6 +49,22 @@ spring:
     port: 5672
     username: guest
     password: guest
+    listener:
+      simple:
+        retry:
+          # This is the setting that stops the infinite redelivery loop. Without it, a
+          # release that throws (MySQL blip, Redis blip) is requeued and redelivered
+          # immediately, forever -- verified: with retry off, the failing message never
+          # reaches the DLQ. Retry gives transient faults a few attempts, and its default
+          # RejectAndDontRequeueRecoverer then rejects fatally, which routes the message to
+          # the queue's dead-letter exchange (see RabbitMQConfig).
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1s
+        # Belt and braces, and NOT what does the work above: while retry is enabled its
+        # recoverer rejects fatally regardless of this flag. It matters only if retry is
+        # ever turned off -- then this is what keeps a rejected message off the queue.
+        default-requeue-rejected: false
 
 management:
   endpoints:
