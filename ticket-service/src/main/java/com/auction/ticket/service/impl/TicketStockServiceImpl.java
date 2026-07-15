@@ -141,13 +141,18 @@ public class TicketStockServiceImpl implements TicketStockService {
         stockMapper.incrementReserved(stock.getId(), requestedQuantity);
 
         final Long reservationId = reservation.getId();
+        // In the transaction, not afterCommit: the event row must commit with the
+        // reservation, or a crash between the two loses the event (see OutboxRelay).
+        eventProducer.publishStockReserved(
+                request.getEventId(), request.getTicketType(),
+                reservationId, userId, request.getQuantity());
+
+        // The delayed release message stays in afterCommit: it is a timer, not an event,
+        // and there is nothing to gain from scheduling a release for a reservation that
+        // may still roll back.
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                eventProducer.publishStockReserved(
-                        request.getEventId(), request.getTicketType(),
-                        reservationId, userId, request.getQuantity());
-
                 rabbitTemplate.convertAndSend(
                         RabbitMQConfig.DELAY_EXCHANGE,
                         RabbitMQConfig.STOCK_RELEASE_ROUTING_KEY,
@@ -191,13 +196,8 @@ public class TicketStockServiceImpl implements TicketStockService {
         }
         stockMapper.decrementReservedAndIncrementSold(reservation.getStockId(), reservation.getQuantity());
 
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                eventProducer.publishStockConfirmed(reservationId, userId);
-                log.info("Confirmed reservation id={}, userId={}", reservationId, userId);
-            }
-        });
+        eventProducer.publishStockConfirmed(reservationId, userId);
+        log.info("Confirmed reservation id={}, userId={}", reservationId, userId);
     }
 
     @Override
@@ -225,14 +225,16 @@ public class TicketStockServiceImpl implements TicketStockService {
             // Only compensate Redis AFTER MySQL commits, otherwise a rollback would
             // leave Redis with extra stock (over-refund).
             final TicketStock finalStock = stock;
+            eventProducer.publishStockReleased(
+                    reservationId, finalStock.getEventId(), finalStock.getTicketType(),
+                    reservation.getQuantity(), "CANCELLED");
+            // The Redis refund stays in afterCommit: it is not transactional, so refunding
+            // before a rollback would hand back stock that was never released.
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
                     String stockKey = RedisKeys.stock(finalStock.getEventId(), finalStock.getTicketType());
                     rollbackRedis(stockKey, reservation.getQuantity());
-                    eventProducer.publishStockReleased(
-                            reservationId, finalStock.getEventId(), finalStock.getTicketType(),
-                            reservation.getQuantity(), "CANCELLED");
                     log.info("Cancelled reservation id={}, userId={}", reservationId, userId);
                 }
             });
@@ -254,15 +256,10 @@ public class TicketStockServiceImpl implements TicketStockService {
         String stockKey = RedisKeys.stock(request.getEventId(), request.getTicketType());
         redis.opsForValue().set(stockKey, String.valueOf(request.getTotalQuantity()));
 
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                eventProducer.publishTicketCreated(
-                        request.getEventId(), request.getTicketType(), request.getTotalQuantity());
-                log.info("Created ticket stock: eventId={}, type={}, total={}",
-                        request.getEventId(), request.getTicketType(), request.getTotalQuantity());
-            }
-        });
+        eventProducer.publishTicketCreated(
+                request.getEventId(), request.getTicketType(), request.getTotalQuantity());
+        log.info("Created ticket stock: eventId={}, type={}, total={}",
+                request.getEventId(), request.getTicketType(), request.getTotalQuantity());
 
         return toStockResponse(stock);
     }
@@ -356,11 +353,11 @@ public class TicketStockServiceImpl implements TicketStockService {
         stockMapper.incrementReserved(stock.getId(), qty);
 
         final Long reservationId = reservation.getId();
+        eventProducer.publishStockReserved(
+                request.getEventId(), request.getTicketType(), reservationId, userId, qty);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                eventProducer.publishStockReserved(
-                        request.getEventId(), request.getTicketType(), reservationId, userId, qty);
                 rabbitTemplate.convertAndSend(
                         RabbitMQConfig.DELAY_EXCHANGE, RabbitMQConfig.STOCK_RELEASE_ROUTING_KEY, reservationId,
                         msg -> {

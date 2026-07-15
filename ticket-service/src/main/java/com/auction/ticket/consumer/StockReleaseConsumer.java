@@ -75,12 +75,13 @@ public class StockReleaseConsumer {
             Long eventId = stock.getEventId();
             String ticketType = stock.getTicketType();
 
+            // Event insert inside the transaction (the outbox contract); only the Redis
+            // refund waits for the commit, since Redis is not part of it.
+            eventProducer.publishStockReleased(reservationId, eventId, ticketType, quantity, "TIMEOUT");
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
                     rollbackRedis(stockKey, quantity);
-                    eventProducer.publishStockReleased(
-                            reservationId, eventId, ticketType, quantity, "TIMEOUT");
                 }
             });
         }

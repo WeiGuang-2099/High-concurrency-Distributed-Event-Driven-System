@@ -59,8 +59,9 @@ A random UUID per attempt would have turned every retry into a duplicate bid.
 - Single-node Redis only. The three keys share no hash tag, so the script would be rejected in
   cluster mode — as it already would have been with two keys. Cluster support would need the
   outbox partitioned per auction, or a hash tag scheme.
-- This closes the bid path only. Auction lifecycle events (created / activated / expired / settled)
-  are still published directly from `AuctionServiceImpl` and `AuctionLifecycleScheduler` after a
-  MySQL write, and retain the dual-write gap. They are low-frequency and MySQL-backed, so the
-  textbook outbox table does apply there — deliberately left as separate work rather than pretending
-  this ADR solved it.
+- This closes the bid path only. The MySQL-backed paths keep their dual-write gap until they get
+  the outbox the textbook actually describes — ticket-service now has one, see
+  [ADR-0007](0007-transactional-outbox-for-mysql-backed-paths.md). Auction lifecycle events
+  (created / activated / expired / settled) are still published directly from `AuctionServiceImpl`
+  and `AuctionLifecycleScheduler` after a MySQL write, as are order-service's events; both remain
+  open rather than being claimed as solved here.
