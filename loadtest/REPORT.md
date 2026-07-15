@@ -180,7 +180,9 @@ bidders sniping one item.
     persisted amounts are unique and the max equals the final highest — verified across every
     persisted row.
   - *No lost bids*: k6-counted 201 responses == MySQL `bid` rows (the async pipeline dropped
-    nothing; producer runs with `acks=all` + idempotence).
+    nothing; producer runs with `acks=all` + idempotence). **This run observed no loss; it did
+    not prove loss was impossible** — the code returned 201 and then published fire-and-forget,
+    so a broker hiccup would have lost the bid silently. Scenario 6 closes that with an outbox.
   - *Convergence*: Redis highest hash == MySQL auction snapshot == max persisted bid row. The
     Redis value is read through the public API by a probe bid at 0.01, whose `BID_TOO_LOW`
     message echoes the current Redis highest.
@@ -193,6 +195,49 @@ bidders sniping one item.
   and a curl probe showing `Connection: close` on the 400s). Fix: spread VUs across loopback
   source IPs with `--local-ips` (one port space each); the script fails a threshold if any dial
   error slips through regardless.
+
+## Scenario 6 — Bid outbox: does making the bid durable cost throughput?
+
+Run 2026-07-15, after the bid path moved to a Redis Stream outbox (`place_bid.lua` now appends
+every accepted bid to `auction:bid:outbox` inside the same script that accepts it; `BidOutboxRelay`
+drains the stream to Kafka and acknowledges only once the broker has the event). Scenario 5's
+"no lost bids" held in a run where nothing went wrong — it was not a guarantee, because the old
+code returned 201 and then published fire-and-forget.
+
+**The measurement question:** Scenario 5 recorded ~3,560 bids/s. Today the outbox build measured
+~2,400-2,700. That looked like a 30% regression, but attributing it to the change would have been
+wrong — only ~4% of requests (the accepted ones) even reach the `XADD`. So the old code was
+re-measured **in the same session, on the same machine state**, by stashing the outbox work:
+
+| build | runs | bids/s |
+|---|---|---|
+| baseline (no outbox, `6e58e88`) | 2 | 2,512 / 3,004 |
+| outbox | 3 | 2,425 / 2,657 / 2,675 |
+
+The two ranges overlap: **the outbox's cost is below this machine's run-to-run noise** (the
+baseline alone spans ±20%). The ~3,560 figure in Scenario 5 is not reproducible today at all,
+including on the code that produced it — it reflects a cleaner machine (fewer containers, less
+memory pressure), not a faster design. Compare rows within a session, never across.
+
+Invariants on every outbox run: **0 lost bids** (790 accepted == 790 persisted), convergence
+`300.00 == 300.00 == 300.00`, all persisted amounts unique. Relay drained fully every time
+(`XINFO GROUPS`: `pending 0`, `lag 0`).
+
+**Two bugs this benchmark caught that the integration tests did not:**
+
+1. **The relay was dead for an entire run** — 887 bids accepted, **0 persisted**. The listener's
+   blocking `XREADGROUP` polls for 1 s, but the shared Lettuce factory runs a deliberately tight
+   `timeout: 200ms` (the bid hot path wants to fail fast on a slow Redis). Every poll timed out,
+   and Spring's `StreamPollTask` cancels the subscription on *any* error by default — so one
+   timeout 0.2 s after startup killed the relay permanently, leaving one log line. The ITs missed
+   it because they drive the relay directly and never exercise the listener container. Fixed with
+   a dedicated connection factory for the relay (command timeout > poll timeout) and
+   `cancelOnError(t -> false)`.
+2. **`cancelOnError(t -> false)` then proved itself under real failure.** Back-to-back runs
+   exhausted Windows' dynamic ports again (12,774 `TIME_WAIT`), which also starved the relay's
+   Redis connections: `Unable to connect to Redis`, logged repeatedly. The relay kept polling,
+   recovered when ports freed, and drained to `lag 0` — where the old default would have died on
+   the first error.
 
 ## Reproduce
 

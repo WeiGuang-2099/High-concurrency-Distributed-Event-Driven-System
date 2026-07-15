@@ -94,6 +94,19 @@
             <artifactId>wiremock-standalone</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- BidOutboxIT drives the outbox against real Redis and Kafka: the guarantee
+             being tested is about what survives a crash, which an embedded fake does
+             not model. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

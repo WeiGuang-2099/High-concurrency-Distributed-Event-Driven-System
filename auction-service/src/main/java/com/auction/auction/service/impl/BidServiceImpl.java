@@ -4,14 +4,11 @@ import com.auction.auction.controller.dto.PlaceBidResponse;
 import com.auction.common.exception.BusinessException;
 import com.auction.auction.service.BidService;
 import com.auction.auction.service.RedisKeys;
-import com.auction.common.event.KafkaTopics;
-import com.auction.common.event.auction.BidOutbidEvent;
-import com.auction.common.event.auction.BidPlacedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -27,30 +24,40 @@ public class BidServiceImpl implements BidService {
     private final StringRedisTemplate redis;
     @SuppressWarnings("rawtypes")
     private final DefaultRedisScript<List> placeBidScript;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final long outboxMaxLen;
 
     public BidServiceImpl(StringRedisTemplate redis,
                           @SuppressWarnings("rawtypes") DefaultRedisScript<List> placeBidScript,
-                          KafkaTemplate<String, Object> kafkaTemplate) {
+                          @Value("${auction.bid.outbox.max-len:1000000}") long outboxMaxLen) {
         this.redis = redis;
         this.placeBidScript = placeBidScript;
-        this.kafkaTemplate = kafkaTemplate;
+        this.outboxMaxLen = outboxMaxLen;
     }
 
+    /**
+     * Evaluates and records the bid in a single Lua script: the accept decision and the
+     * outbox append are one atomic step, so a bid this method reports as placed is always
+     * recoverable. Publishing to Kafka is BidOutboxRelay's job -- doing it here would
+     * reintroduce the window where the caller has a 201 but the event was never sent.
+     */
     @Override
     @SuppressWarnings("unchecked")
     public PlaceBidResponse placeBid(Long auctionId, Long bidderId, String bidderUsername, BigDecimal amount) {
         Instant bidTime = Instant.now();
         List<String> keys = Arrays.asList(
                 RedisKeys.auctionStatus(auctionId),
-                RedisKeys.auctionHighest(auctionId));
+                RedisKeys.auctionHighest(auctionId),
+                RedisKeys.bidOutboxStream());
 
         List<Object> result = (List<Object>) redis.execute(
                 placeBidScript,
                 keys,
                 String.valueOf(bidderId),
                 amount.toPlainString(),
-                String.valueOf(bidTime.toEpochMilli()));
+                String.valueOf(bidTime.toEpochMilli()),
+                String.valueOf(auctionId),
+                bidderUsername == null ? "" : bidderUsername,
+                String.valueOf(outboxMaxLen));
 
         if (result == null || result.size() < 4) {
             throw new BusinessException(500, "Bid evaluation failed");
@@ -58,7 +65,6 @@ public class BidServiceImpl implements BidService {
 
         long okFlag = ((Number) result.get(0)).longValue();
         String code = (String) result.get(1);
-        String prevBidderStr = (String) result.get(2);
         String prevAmountStr = (String) result.get(3);
 
         if (okFlag != 1L) {
@@ -72,45 +78,13 @@ public class BidServiceImpl implements BidService {
             }
         }
 
-        Long previousBidderId = prevBidderStr == null || prevBidderStr.isEmpty()
-                ? null : Long.parseLong(prevBidderStr);
-        BigDecimal previousAmount = prevAmountStr == null || prevAmountStr.isEmpty()
-                ? null : new BigDecimal(prevAmountStr);
-
-        BidPlacedEvent placedEvent = new BidPlacedEvent(
-                auctionId, bidderId, bidderUsername, amount, bidTime,
-                previousBidderId, previousAmount);
-        publish(auctionId, placedEvent);
-
-        if (previousBidderId != null && !previousBidderId.equals(bidderId)) {
-            BidOutbidEvent outbidEvent = new BidOutbidEvent(
-                    auctionId, previousBidderId, previousAmount, bidderId, amount);
-            publish(auctionId, outbidEvent);
-        }
-
-        log.debug("Bid placed: auction={} bidder={} amount={}", auctionId, bidderId, amount);
+        log.debug("Bid placed: auction={} bidder={} amount={} outboxId={}",
+                auctionId, bidderId, amount, result.size() > 4 ? result.get(4) : "?");
         return PlaceBidResponse.builder()
                 .auctionId(auctionId)
                 .bidderId(bidderId)
                 .amount(amount)
                 .bidTime(bidTime)
                 .build();
-    }
-
-    /**
-     * The Lua script has already accepted the bid, so the caller gets a 201 regardless of
-     * what happens here. A failed send therefore means Redis holds a highest bid that has
-     * no row in MySQL: on restart AuctionStateWarmer rebuilds Redis from the bid table and
-     * the bid disappears. Logging makes that visible; closing the window needs the send to
-     * become part of the same atomic step as the accept (transactional outbox).
-     */
-    private void publish(Long auctionId, Object event) {
-        kafkaTemplate.send(KafkaTopics.AUCTION_EVENTS, String.valueOf(auctionId), event)
-                .whenComplete((result, ex) -> {
-                    if (ex != null) {
-                        log.error("Bid accepted in Redis but event publish failed: auction={} event={}",
-                                auctionId, event.getClass().getSimpleName(), ex);
-                    }
-                });
     }
 }
