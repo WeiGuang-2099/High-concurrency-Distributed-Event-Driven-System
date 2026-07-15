@@ -112,18 +112,9 @@ public class KafkaConfig {
         // instead of dead-lettering would silently lose events from the source of truth.
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
-                (record, ex) -> new TopicPartition(dltFor(record.topic()), record.partition()));
+                (record, ex) -> new TopicPartition(KafkaTopics.dltFor(record.topic()), record.partition()));
         factory.setCommonErrorHandler(new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L)));
         return factory;
-    }
-
-    private static String dltFor(String topic) {
-        switch (topic) {
-            case KafkaTopics.AUCTION_EVENTS: return KafkaTopics.AUCTION_EVENTS_DLT;
-            case KafkaTopics.TICKET_EVENTS: return KafkaTopics.TICKET_EVENTS_DLT;
-            case KafkaTopics.ORDER_EVENTS: return KafkaTopics.ORDER_EVENTS_DLT;
-            default: return topic + "-dlt";
-        }
     }
 }
 

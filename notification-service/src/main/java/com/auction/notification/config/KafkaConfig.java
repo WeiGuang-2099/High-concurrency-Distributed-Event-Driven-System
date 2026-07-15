@@ -1,16 +1,22 @@
 package com.auction.notification.config;
 
+import com.auction.common.event.KafkaTopics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.converter.JsonMessageConverter;
 import org.springframework.kafka.support.mapping.DefaultJackson2JavaTypeMapper;
@@ -27,6 +33,19 @@ public class KafkaConfig {
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
 
+    // DLTs for the topics this service consumes. Declared here (not only in
+    // event-store-service) so notification-service can dead-letter on its own;
+    // partition counts must match the source topics, see KafkaTopics.dltFor.
+    @Bean
+    public NewTopic notificationAuctionEventsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.AUCTION_EVENTS_DLT).partitions(6).replicas(1).build();
+    }
+
+    @Bean
+    public NewTopic notificationTicketEventsDltTopic() {
+        return TopicBuilder.name(KafkaTopics.TICKET_EVENTS_DLT).partitions(6).replicas(1).build();
+    }
+
     @Bean
     public ConsumerFactory<String, Object> consumerFactory() {
         Map<String, Object> props = new HashMap<>();
@@ -41,7 +60,7 @@ public class KafkaConfig {
 
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
-            ConsumerFactory<String, Object> consumerFactory) {
+            ConsumerFactory<String, Object> consumerFactory, KafkaTemplate<String, Object> kafkaTemplate) {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
@@ -61,8 +80,13 @@ public class KafkaConfig {
                 "com.auction.common.event.order");
         converter.setTypeMapper(typeMapper);
         factory.setRecordMessageConverter(converter);
-        // Error handling: retry 3 times with 1s gap, then skip
-        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1000L, 3L)));
+        // Retry 3 times with 1s gap, then publish to the source topic's DLT. Skipping
+        // instead of dead-lettering would silently drop persisted user notifications
+        // (OUTBID / AUCTION_SETTLED rows), not just the ephemeral WebSocket push.
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
+                kafkaTemplate,
+                (record, ex) -> new TopicPartition(KafkaTopics.dltFor(record.topic()), record.partition()));
+        factory.setCommonErrorHandler(new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L)));
         return factory;
     }
 }
