@@ -5,6 +5,8 @@
 A real-time auction and ticketing platform built with a distributed event-driven architecture. The system handles two high-concurrency scenarios: **flash auctions** (thousands of users bidding simultaneously) and **ticket rushes** (thousands of users buying limited stock). Both scenarios are protected against overselling and data races using Redis Lua scripts, MySQL optimistic locking, and transactional compensation.
 
 > **Load-tested (k6):** zero oversell under **200 concurrent buyers** (2,000 simultaneous reserve attempts on 100 stock → exactly 100 sold), a Redis-Lua vs pessimistic-lock benchmark showing **~1.5x throughput** at lower tail latency, and a pure-Redis auction-bid path sustaining **thousands of bids/s with no lost bids** — guaranteed by an outbox rather than merely not observed. See [Performance & Load Testing](#performance--load-testing).
+>
+> **What is proven and what is not:** each guarantee is listed with the test behind it, next to the gaps that are still open, in [Guarantees, Evidence and Known Gaps](#guarantees-evidence-and-known-gaps).
 
 ## Screenshots
 
@@ -29,7 +31,7 @@ Auction detail — bids validated atomically by a Redis Lua script; the bid hist
 | **Message Broker (Delayed)** | RabbitMQ 3 + delayed-message-exchange plugin | Order/reservation timeout (30 min auto-cancel) |
 | **Relational DB** | MySQL 8.0 + MyBatis-Plus 3.5.6 | Transactional data (users, auctions, tickets, orders) |
 | **In-Memory Store** | Redis 7 | Atomic stock deduction (Lua), atomic bid validation (Lua), token blacklist, hot-auction cache |
-| **Document DB** | MongoDB 7 | Event sourcing store, CQRS read-side projections |
+| **Document DB** | MongoDB 7 | Append-only event log, CQRS read-side projections |
 | **Distributed Transactions** | Application-level compensation saga | Cross-service consistency for auction settlement (reserve stock + create order, with compensation + retry on failure) |
 | **Event Durability** | Transactional outbox — MySQL table (ticket) and Redis Stream (bid) | An accepted write and its event are recorded atomically, so a broker outage cannot lose the event ([ADR-0005](docs/adr/0005-redis-stream-outbox-for-bid-durability.md), [ADR-0007](docs/adr/0007-transactional-outbox-for-mysql-backed-paths.md)) |
 | **Observability** | Micrometer Tracing + Brave, Zipkin, ELK 8.12 | Distributed tracing (one trace id shared by Zipkin spans and Kibana logs), structured JSON log aggregation |
@@ -145,7 +147,7 @@ Scheduler (every 1s):
 ├── ticket-service/            # Stock management, atomic reserve/confirm/cancel (Lua), timeout handling
 ├── order-service/             # Order state machine, mock payment, CAS status transitions, timeout expiry
 ├── notification-service/      # Kafka event consumers, WebSocket (STOMP) push, notification persistence
-├── event-store-service/       # MongoDB event sourcing, CQRS projections, snapshot + replay API
+├── event-store-service/       # MongoDB append-only event log, CQRS projections, snapshot + replay API
 ├── frontend/                  # React 18 + TypeScript SPA (Ant Design, React Query, WebSocket)
 ├── eureka-server/             # Service registry (Netflix Eureka, :8761)
 ├── config-server/             # Centralized config (Spring Cloud Config, :8888, serves config-repo/)
@@ -162,7 +164,7 @@ Ticket oversell prevention uses a two-layer approach:
 
 - **Redis Lua script** (`reserve_ticket.lua`) performs an atomic check-and-decrement. If `stock < quantity`, it returns immediately without modifying state. This handles thousands of concurrent requests with zero oversell.
 - **MySQL transaction** then creates the reservation record and increments `reserved_quantity`. If the MySQL transaction fails and rolls back, a `TransactionSynchronization.afterCompletion` hook compensates Redis by incrementing the stock back.
-- The compensation runs **after** the MySQL commit/rollback decision, ensuring Redis and MySQL never diverge.
+- The compensation runs **after** the MySQL commit/rollback decision, so a reserve that fails in MySQL gives its Redis stock back rather than leaking it.
 
 ### 2. Atomic Bid Validation with Redis Lua
 
@@ -173,14 +175,57 @@ The `place_bid.lua` script checks auction status (`ACTIVE`) and validates the bi
 - **Kafka** carries all domain events (`auction-events`, `ticket-events`, `order-events`). Producers use idempotent delivery (`acks=all`, `enable.idempotence=true`), consumers use manual acknowledgment with dead-letter topics.
 - **RabbitMQ** with the `rabbitmq_delayed_message_exchange` plugin handles time-delayed operations: order payment timeout (30 min) and ticket reservation expiry. When a delayed message fires, the consumer checks if the reservation/order is still pending before releasing stock.
 
-### 4. Event Sourcing with MongoDB + CQRS Projections
+### 4. Event Log with MongoDB + CQRS Projections
 
-The `event-store-service` maintains an append-only event log in MongoDB:
+The `event-store-service` maintains an append-only event log in MongoDB. This is an event log
+with CQRS read models, not event sourcing in the strict sense: MySQL and Redis remain the source
+of truth for the write side, the log is derived from what the services publish to Kafka, and no
+service rebuilds its own state from it. Replay exists for audit and debugging.
 
 - **EventStoreConsumer** subscribes to all Kafka topics and appends every domain event with a monotonically increasing sequence number per aggregate. Idempotency is enforced via a unique index on `eventId`.
 - **Projection consumers** (separate consumer groups) build materialized views: bid history, order timeline, stock movement log, auction summary.
 - **Snapshot + Replay**: every 100 events per aggregate, a snapshot is stored. The `/api/admin/events/replay/{aggregateType}/{aggregateId}` endpoint reconstructs aggregate state from the latest snapshot plus subsequent events.
 - **Query API** (`/api/event-store/*`) reads exclusively from projections, never touching the write-side event stream.
+
+## Guarantees, Evidence and Known Gaps
+
+What the system claims, what backs each claim, and where a claim does not hold yet. A row
+moves to "Holds" only when a test that fails without the fix is in the repository.
+
+| Guarantee | Status | Evidence |
+|-----------|--------|----------|
+| Concurrent reserves on the Redis-Lua path do not oversell | Holds | `ConcurrentReserveIT`, k6 `ticket-rush.js` |
+| An accepted bid is not lost (201 means durably recorded) | Holds, bounded by Redis AOF `everysec`: a hard Redis crash can lose up to about a second | `BidOutboxIT`, k6 `auction-bid.js` post-run invariant |
+| A ticket event is published if and only if its business change committed | Holds | `OutboxIT` (the mechanism), `OutboxRelayScheduleIT` (the scheduled relay actually running) |
+| A consumed event is either handled or dead-lettered, never skipped | Holds for event-store and notification | `EventStorePipelineIT`, `ProjectionErrorHandlingTest`, `NotificationPipelineIT` |
+| Read-model projections are idempotent under redelivery | Holds | `ProjectionIdempotencyIT` |
+| Timed-out reservations give their stock back | Holds | `StockReleaseTimeoutIT` |
+| Per-user rate limit on the reserve and bid routes | Holds on the declared routes (see gateway gap below) | `GatewayRateLimitIT`, k6 `gateway-rate-limit.js` |
+| The highest accepted bid wins the auction | **Does not hold yet** | none |
+| A failed settlement is retried until it succeeds | **Does not hold yet** | `SettlementSagaIT` covers the compensation call only |
+| A payment takes effect exactly once | **Does not hold yet** | unit tests only |
+
+Known gaps, found in a full review of this codebase and not fixed yet:
+
+- **Winner selection at close.** The scheduler closes the auction in Redis and then reads the
+  winner from the MySQL `bid` table, which is filled asynchronously. A bid accepted in the last
+  moments may not have reached MySQL, so an earlier, lower bid can win.
+- **Settlement recovery.** When settlement fails, the revert does not put the auction back into
+  a state the scheduler will retry.
+- **Payment.** The result of the `PAYING → PAID` compare-and-set is not enforced.
+- **Stock paths other than the main reserve.** The reserve `UPDATE` in MySQL has no availability
+  guard of its own and relies on Redis having decided; the settlement reserve does not debit
+  Redis; and the pessimistic-lock endpoint that exists for the benchmark is reachable through
+  the gateway.
+- **Reservation confirm** can be called by the buyer directly rather than only by the order
+  service after payment.
+- **Gateway.** The internal-path filter and the discovery-locator routes need hardening before
+  the gateway is exposed publicly. This project has only been run locally.
+- **Order and auction lifecycle events** are still published after their MySQL write, without
+  an outbox.
+- **Notifications are not idempotent.** A redelivered event stores a second notification row.
+- **The JWT signing keystore** under `user-service/src/main/resources/keys/` is a development
+  key committed for local runs. A deployment must supply its own.
 
 ## Performance & Load Testing
 
@@ -194,7 +239,7 @@ The two hot write paths — ticket reserve (flash sale) and auction bid — are 
 | **Auction bid throughput** | 200 VUs · 20,000 bids on **one** auction (pure-Redis Lua CAS, async outbox→Kafka→MySQL persistence) | **~2,400–3,560 bids/s** depending on machine state, p95 71 ms, 0 errors · **0 lost bids** · Redis == MySQL snapshot == max bid row |
 | **Gateway rate limiting** | Through the gateway: 1 user at 30 req/s vs 5 users at 2 req/s each (per-user Redis token bucket: 5/s + burst 10) | **Abuser: 106 of 601 passed (theory 110), 495 got 429; compliant users: zero 429s** |
 
-- **Oversell is verified by a post-run invariant** (`reserved + sold ≤ total`), not assumed — and the Redis decrement count always matches MySQL's `reserved_quantity`, so the two stores never diverge under saturation.
+- **Oversell is verified by a post-run invariant** (`reserved + sold ≤ total`), not assumed — and on every recorded run the Redis decrement count matched MySQL's `reserved_quantity`, so the two stores stayed in step under saturation.
 - **The optimistic/pessimistic comparison quantifies a design tradeoff:** moving the contention check into a Redis Lua script shortens how long each request holds the MySQL row lock, yielding ~1.5x throughput over `SELECT … FOR UPDATE` at equal correctness.
 - **The bid path shows the other end of the spectrum (~10x the reserve success path):** a reserve success writes MySQL synchronously on the request thread (~261 req/s); a bid touches only Redis (Lua compare-and-set on the highest-bid hash) and defers durability to an outbox → relay → Kafka → consumer → MySQL. The post-run invariant proves the deferral is safe: every accepted bid reached MySQL and all three views of the highest price converged.
 - **The bid throughput is a range, not a number, and the range is the honest part.** Adding the outbox looked like a 30% regression against the previously recorded ~3,560 bids/s — until the old code was re-measured *in the same session* and scored 2,512–3,004 on the same loaded laptop. The outbox's cost is below this machine's run-to-run noise; the ~3,560 reflects a cleaner machine, not a faster design. Only ~4% of requests (the accepted ones) reach the outbox write at all. Numbers here are only comparable within a session — see [Scenario 6](loadtest/REPORT.md).
@@ -394,9 +439,16 @@ mvn test
 
 ### Integration Tests (Testcontainers)
 
-32 tests across 9 classes, run by `mvn verify` against real MySQL / Redis / Kafka / MongoDB /
+36 tests across 11 classes, run by `mvn verify` against real MySQL / Redis / Kafka / MongoDB /
 RabbitMQ containers. These exist because the failures worth catching here are the ones a mock
 cannot have: at-least-once redelivery, a dead consumer, a broker that is down.
+
+Two of them exist because a component passed its own tests while never running in the real
+service. The ticket outbox relay had a test that called it by hand, and no scheduler was enabled
+to call it in production. The notification listeners had no test at all, and a listener factory
+in the wrong ack mode dead-lettered every record before the handler ran. Both services started
+cleanly and logged nothing. `OutboxRelayScheduleIT` and `NotificationPipelineIT` drive each
+component through its real trigger and assert only on the observable result.
 
 | Service | Test | What it pins down |
 |---------|------|-------------------|
@@ -404,11 +456,13 @@ cannot have: at-least-once redelivery, a dead consumer, a broker that is down.
 | ticket-service | `SettleReservationIT` | Saga participant is an idempotent compensation |
 | ticket-service | `StockReleaseTimeoutIT` | The 30-min timeout over a real delayed exchange; poison and failing messages dead-letter instead of looping forever |
 | ticket-service | `OutboxIT` | Event row commits with the reserve, rolls back with it, and survives an unreachable broker |
+| ticket-service | `OutboxRelayScheduleIT` | The relay runs on its real schedule: a reservation's event reaches Kafka with nobody calling the relay |
 | auction-service | `SettlementSagaIT` | Compensation flow over real HTTP (WireMock + Feign) |
 | auction-service | `BidOutboxIT` | Accept and record are atomic; a bid orphaned by a crashed relay is reclaimed and published |
 | event-store-service | `EventStorePipelineIT` | Kafka → Mongo end to end, and a poisoned event reaches the DLT |
 | event-store-service | `ProjectionIdempotencyIT` | Redelivery leaves one row, does not inflate `bidCount`, does not regress a SETTLED auction |
 | gateway-service | `GatewayRateLimitIT` | Per-user token bucket with real Redis and real JWTs |
+| notification-service | `NotificationPipelineIT` | A Kafka event becomes a stored notification through the real listeners and is not dead-lettered; one whose handling keeps failing is dead-lettered after its retries and logged |
 
 ```bash
 mvn verify          # unit + integration (needs Docker)
@@ -435,10 +489,10 @@ k6 run --local-ips=127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5 -e ITERATIONS=20000 -
 | P2 | Auction service (CRUD, atomic bidding, lifecycle scheduler) | Done |
 | P3 | Ticket service (Lua stock deduction, reserve/confirm/cancel) | Done |
 | P4 | Order service (state machine, payment, settlement compensation saga) | Done |
-| P5 | Event sourcing (MongoDB append-only, CQRS projections, replay) | Done |
+| P5 | Event log (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
 | P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing, structured JSON logging to ELK, and gateway per-user rate limiting (Spring Cloud Gateway RequestRateLimiter + Redis token bucket) done; Kibana dashboards pending |
-| P8 | Testing (unit, integration, K6 load tests) | Done — 118 unit tests + 32 Testcontainers integration tests (`mvn verify`) + k6 load tests (zero oversell, optimistic-vs-pessimistic, gateway rate limiting, auction-bid throughput with no-lost-bids invariant) |
+| P8 | Testing (unit, integration, K6 load tests) | Done — 118 unit tests + 36 Testcontainers integration tests (`mvn verify`) + k6 load tests (zero oversell, optimistic-vs-pessimistic, gateway rate limiting, auction-bid throughput with no-lost-bids invariant) |
 | P9 | README, architecture decision records, demo guide | This README + [7 ADRs](docs/adr/); rendered diagrams and demo guide pending |
 | P10 | Event durability (transactional outbox) | Bid path done (Redis Stream, [ADR-0005](docs/adr/0005-redis-stream-outbox-for-bid-durability.md)); ticket path done (MySQL table, [ADR-0007](docs/adr/0007-transactional-outbox-for-mysql-backed-paths.md)); **order and auction lifecycle events still publish after their MySQL write and keep the dual-write gap** |
 | P11 | Cloud deployment (AWS, Terraform) | Not started |
