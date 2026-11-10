@@ -51,7 +51,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * rather than a lost in-flight message.</p>
  *
  * <p>The relay's schedule is disabled here so the test drives it explicitly; a background
- * poll would race every assertion about what is still pending.</p>
+ * poll would race every assertion about what is still pending. That makes this a test of
+ * the mechanism only: it cannot tell whether anything calls the relay in a running service,
+ * and for a while nothing did. {@link OutboxRelayScheduleIT} covers the real trigger.</p>
  */
 @SpringBootTest(properties = {
         "spring.rabbitmq.listener.simple.auto-startup=false",
