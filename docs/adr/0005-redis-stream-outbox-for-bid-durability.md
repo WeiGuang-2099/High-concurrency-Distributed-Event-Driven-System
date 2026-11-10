@@ -43,10 +43,15 @@ A random UUID per attempt would have turned every retry into a duplicate bid.
 
 ## Consequences
 
-- **Durability is now Redis's**, and it is only as good as Redis persistence. With the default
+- **Durability is now Redis's**, and it is only as good as Redis persistence. With AOF on and
   `appendfsync everysec`, a hard crash can lose up to a second of accepted bids. This is the trade
   for keeping bid accept off MySQL; it is recorded in `BidOutboxRelay`'s javadoc rather than left
   for someone to discover. `appendfsync always` would close it at a cost the hot path would feel.
+  *Correction, 2026-11-10:* this ADR originally called `everysec` "the default", which is only
+  true once AOF is enabled. The `redis:7-alpine` image ships with AOF off, and `docker-compose.yml`
+  did not turn it on, so as first shipped the exposure was the gap between RDB snapshots (minutes),
+  not one second. Compose now starts Redis with `--appendonly yes --appendfsync everysec` and a
+  data volume, which is what makes the bound above hold.
 - **Throughput cost is below measurement noise** (`REPORT.md` Scenario 6): outbox 2,425-2,675
   bids/s against a same-session baseline of 2,512-3,004. Only ~4% of requests — the accepted ones
   — reach the `XADD` at all.
