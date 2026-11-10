@@ -96,3 +96,6 @@ docs/superpowers/
 
 # Internal PRD / planning docs - keep local only, do not publish
 tasks/
+
+# Local project interview analysis and preparation docs
+docs/PROJECT_INTERVIEW_*.md

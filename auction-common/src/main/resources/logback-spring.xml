@@ -23,20 +23,38 @@
         </encoder>
     </appender>
 
-    <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
-        <destination>${LOGSTASH_HOST}:${LOGSTASH_PORT}</destination>
-        <keepAliveDuration>5 minutes</keepAliveDuration>
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <!-- traceId/spanId come through automatically (LogstashEncoder includes the MDC);
-                 this just tags every line with its originating service. -->
-            <customFields>{"service":"${appName}"}</customFields>
-        </encoder>
-    </appender>
+    <!--
+      Two complete, mutually exclusive profile blocks, each a direct child of <configuration>
+      and each carrying its own <root>. Both parts of that matter:
 
-    <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-        <springProfile name="elk">
+      - A <springProfile> nested inside <root> is not supported by this logback version. With
+        the appender declared at top level and only its appender-ref inside a nested profile,
+        the appender was started in every run, so each service tried to reach Logstash every
+        30 seconds and printed a stack trace when it could not, with or without the profile.
+      - Moving only the appender into a profile and leaving the nested appender-ref behind is
+        worse: <root> then depends on an appender that does not exist, logback skips <root>
+        without an error, and the service logs nothing at all.
+    -->
+    <springProfile name="elk">
+        <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+            <destination>${LOGSTASH_HOST}:${LOGSTASH_PORT}</destination>
+            <keepAliveDuration>5 minutes</keepAliveDuration>
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- traceId/spanId come through automatically (LogstashEncoder includes the MDC);
+                     this just tags every line with its originating service. -->
+                <customFields>{"service":"${appName}"}</customFields>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
             <appender-ref ref="LOGSTASH"/>
-        </springProfile>
-    </root>
+        </root>
+    </springProfile>
+
+    <springProfile name="!elk">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
 </configuration>

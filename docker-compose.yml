@@ -26,8 +26,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: auction-redis
+    # AOF on, fsync once a second. Redis is the system of record for an accepted bid until
+    # the relay has published it (docs/adr/0005), so the image default (AOF off, RDB
+    # snapshots minutes apart) would make "at most ~1s of accepted bids at risk" untrue.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -211,6 +217,7 @@ services:
 
 volumes:
   mysql-data:
+  redis-data:
   mongo-data:
   kafka-data:
   rabbitmq-data:
