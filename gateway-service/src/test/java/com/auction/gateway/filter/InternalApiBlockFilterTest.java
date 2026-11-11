@@ -95,6 +95,25 @@ class InternalApiBlockFilterTest {
         assertThat(chainCalled).isFalse();
     }
 
+    /**
+     * With X-Forwarded-Prefix honoured, the prefix arrives as the context path while the route
+     * predicate and the forwarded URL use the whole path. The filter has to look at the
+     * whole path too.
+     */
+    @Test
+    @DisplayName("internal 段落在 context path 里 - 同样封禁")
+    void internalSegment_insideTheContextPath_blocked() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest
+                .method(HttpMethod.POST, URI.create("http://localhost/api/tickets/internal/settle-reserve"))
+                .contextPath("/api/tickets/internal")
+                .build());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(chainCalled).isFalse();
+    }
+
     @Test
     @DisplayName("大小写不同的 internal - 同样封禁")
     void internalSegment_inAnotherCase_blocked() {

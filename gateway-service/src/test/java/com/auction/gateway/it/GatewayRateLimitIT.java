@@ -223,6 +223,24 @@ class GatewayRateLimitIT {
                 .isZero();
     }
 
+    /**
+     * Only ticket-service and auction-service have an instance in this test, so order-service
+     * is a listed route whose service is down. That is an outage and reads as one (503),
+     * while a path that is simply not listed is 404. The two used to be indistinguishable.
+     */
+    @Test
+    void listedRouteWhoseServiceIsDown_is503_whileAnUnlistedPathIs404() {
+        Map<String, String> auth = Map.of("Authorization", "Bearer " + mintToken(503));
+
+        RawHttp.Response serviceDown = RawHttp.send(port, "GET", "/api/orders", auth);
+        RawHttp.Response notListed = RawHttp.send(port, "GET", "/api/orders/9/refund", auth);
+
+        assertThat(serviceDown.status()).isEqualTo(503);
+        assertThat(serviceDown.body()).contains("Service temporarily unavailable");
+        assertThat(notListed.status()).isEqualTo(404);
+        assertThat(BACKEND.countRequestsMatching(anyRequestedFor(anyUrl()).build()).getCount()).isZero();
+    }
+
     private FluxExchangeResult<String> postReserve(String token) {
         return webTestClient.post().uri("/api/tickets/reserve")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)

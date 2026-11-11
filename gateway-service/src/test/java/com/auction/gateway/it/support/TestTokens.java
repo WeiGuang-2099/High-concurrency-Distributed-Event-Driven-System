@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
+import java.security.PrivateKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.time.Instant;
 import java.util.Date;
@@ -33,22 +34,40 @@ public final class TestTokens {
     }
 
     public static String mint(long userId, String roles) {
+        return sign(PRIVATE_KEY, userId, roles, "auction-platform", Instant.now().plusSeconds(3600));
+    }
+
+    /** For the tokens the gateway must refuse: another signing key, another issuer, a past expiry. */
+    public static String sign(PrivateKey key, long userId, String roles, String issuer, Instant expiry) {
         try {
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(String.valueOf(userId))
                     .claim("username", "u" + userId)
                     .claim("roles", roles)
                     .claim("jti", UUID.randomUUID().toString().replace("-", ""))
-                    .issuer("auction-platform")
+                    .issuer(issuer)
                     .issueTime(new Date())
-                    .expirationTime(Date.from(Instant.now().plusSeconds(3600)))
+                    .expirationTime(Date.from(expiry))
                     .build();
             SignedJWT jwt = new SignedJWT(
                     new JWSHeader.Builder(JWSAlgorithm.RS256).type(JOSEObjectType.JWT).build(), claims);
-            jwt.sign(new RSASSASigner(PRIVATE_KEY));
+            jwt.sign(new RSASSASigner(key));
             return jwt.serialize();
         } catch (Exception e) {
             throw new IllegalStateException("Failed to mint test JWT", e);
+        }
+    }
+
+    /** The key user-service signs with. */
+    public static PrivateKey signingKey() {
+        return PRIVATE_KEY;
+    }
+
+    public static String jtiOf(String token) {
+        try {
+            return SignedJWT.parse(token).getJWTClaimsSet().getStringClaim("jti");
+        } catch (Exception e) {
+            throw new IllegalStateException("Not a JWT: " + token, e);
         }
     }
 

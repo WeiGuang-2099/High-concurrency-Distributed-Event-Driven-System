@@ -40,7 +40,11 @@ public class InternalApiBlockFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        PathContainer path = exchange.getRequest().getPath().pathWithinApplication();
+        // The whole path, context path included: it is what the route predicate matches and
+        // what gets forwarded. Behind a proxy that sets X-Forwarded-Prefix (with
+        // server.forward-headers-strategy=framework) the prefix becomes the context path,
+        // and judging only the part after it would let the prefix carry the segment.
+        PathContainer path = exchange.getRequest().getPath();
         if (hasInternalSegment(path)) {
             log.warn("Blocked external access to internal endpoint: {} {}",
                     exchange.getRequest().getMethod(), exchange.getRequest().getPath().value());

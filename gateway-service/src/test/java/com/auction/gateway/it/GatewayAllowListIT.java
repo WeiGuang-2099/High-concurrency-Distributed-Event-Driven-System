@@ -13,15 +13,21 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.cloud.gateway.filter.FilterDefinition;
 import org.springframework.cloud.gateway.handler.predicate.PredicateDefinition;
+import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.route.RouteDefinition;
 import org.springframework.cloud.gateway.route.RouteDefinitionLocator;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 import reactor.netty.http.client.HttpClient;
 
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * change there is a change here. Requests go out over a plain socket because the usual
  * test clients normalise the path before sending it.
  *
+ * <p>The config server is off, but what it would serve is not left out: the two files it
+ * hands the gateway are imported from config-repo/ with the same precedence, above
+ * application.yml. In a deployment those values win, so a routing key added there (the
+ * discovery locator switched back on, say) would change the route table while a test that
+ * only read application.yml stayed green.
+ *
  * <p>"Not forwarded" is asserted on what the backends received, never on the status code
  * alone: every backend answers 200 to anything, so a leaked request cannot hide behind a
  * stub's 404.
@@ -50,7 +62,10 @@ import static org.assertj.core.api.Assertions.assertThat;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "spring.cloud.config.enabled=false",
-                "eureka.client.enabled=false"
+                "eureka.client.enabled=false",
+                // Relative to the module directory, which is where Maven runs the tests.
+                // Not "optional:": a wrong path must fail the test, not skip the files.
+                "spring.config.import=file:../config-repo/application.yml,file:../config-repo/gateway-service.yml"
         })
 class GatewayAllowListIT {
 
@@ -88,6 +103,12 @@ class GatewayAllowListIT {
     @Autowired
     RouteDefinitionLocator routeDefinitionLocator;
 
+    @Autowired
+    RouteLocator routeLocator;
+
+    @Autowired
+    ReactiveStringRedisTemplate redis;
+
     @BeforeEach
     void resetBackends() {
         BACKENDS.forEach(RecordingBackend::reset);
@@ -99,6 +120,11 @@ class GatewayAllowListIT {
      * A second copy of the allow-list, on purpose. Adding, widening or removing a route in
      * application.yml fails this test until the same change is made here, so the public
      * surface cannot change as a side effect of something else.
+     *
+     * <p>A line also carries the route's filters. The limiter appears with the rates that
+     * ship (replenish per second / burst), which no other test runs on: GatewayRateLimitIT
+     * tightens them to make the bucket empty quickly. Any other filter appears by name, so a
+     * RewritePath or SetPath that sent a listed path to an unlisted handler would show here.
      */
     @Test
     void routeTable_isExactlyTheAllowList() {
@@ -113,11 +139,11 @@ class GatewayAllowListIT {
                 "GET /api/auctions/hot -> auction-service",
                 "GET /api/auctions/{id:[0-9]+} -> auction-service",
                 "GET /api/auctions/{auctionId:[0-9]+}/bids -> auction-service",
-                "POST /api/auctions/{auctionId:[0-9]+}/bids -> auction-service rate-limited",
+                "POST /api/auctions/{auctionId:[0-9]+}/bids -> auction-service rate-limited 10/20 by #{@userKeyResolver}",
                 "POST /api/admin/auctions -> auction-service",
 
                 "GET /api/tickets/events/{eventId:[0-9]+} -> ticket-service",
-                "POST /api/tickets/reserve -> ticket-service rate-limited",
+                "POST /api/tickets/reserve -> ticket-service rate-limited 5/10 by #{@userKeyResolver}",
                 "POST /api/admin/tickets -> ticket-service",
 
                 "POST /api/orders -> order-service",
@@ -152,6 +178,18 @@ class GatewayAllowListIT {
             assertThat(argsOf(route, "Method")).as("Method predicate of route %s", route.getId())
                     .isNotEmpty();
         }
+    }
+
+    /**
+     * The two tests above read route definitions. This one reads what the gateway actually
+     * serves, which also includes any route built in Java by a RouteLocator bean.
+     */
+    @Test
+    void routesTheGatewayServes_areExactlyTheDefinedOnes() {
+        List<String> served = routeLocator.getRoutes().map(Route::getId).collectList().block(Duration.ofSeconds(10));
+        List<String> defined = routeDefinitions().stream().map(RouteDefinition::getId).toList();
+
+        assertThat(served).containsExactlyInAnyOrderElementsOf(defined);
     }
 
     // --- listed endpoints reach their own service ---------------------------------------
@@ -286,6 +324,13 @@ class GatewayAllowListIT {
                 Arguments.of("GET", "/ws/notifications/123/abcd0123/jsonp"),
                 Arguments.of("POST", "/ws/notifications/123/abcd0123/websocket"),
                 Arguments.of("GET", "/ws/other/info"),
+
+                // The gateway's own actuator exposes health and info and nothing else.
+                Arguments.of("GET", "/actuator/env"),
+                Arguments.of("GET", "/actuator/beans"),
+                Arguments.of("GET", "/actuator/heapdump"),
+                Arguments.of("GET", "/actuator/metrics"),
+                Arguments.of("GET", "/actuator/gateway/routes"),
 
                 Arguments.of("GET", "/"),
                 Arguments.of("GET", "/nope"));
@@ -449,6 +494,78 @@ class GatewayAllowListIT {
         assertThat(request.headers().getAll("X-User-Roles")).containsExactly("USER");
     }
 
+    // --- token verification --------------------------------------------------------------
+
+    /**
+     * The signature, issuer, expiry and revocation checks in JwtAuthenticationFilter. Each
+     * token here is refused by a different one of them.
+     */
+    @Test
+    void tokenThatFailsVerification_is401_andNeverForwarded() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        PrivateKey someoneElsesKey = generator.generateKeyPair().getPrivate();
+        Instant inAnHour = Instant.now().plusSeconds(3600);
+
+        String valid = TestTokens.mint(880_001);
+        String[] parts = valid.split("\\.");
+        char flipped = parts[2].charAt(10) == 'A' ? 'B' : 'A';
+        String revoked = TestTokens.mint(880_002);
+        redis.opsForValue().set("token:blacklist:" + TestTokens.jtiOf(revoked), "1").block(Duration.ofSeconds(5));
+
+        Map<String, String> refused = new LinkedHashMap<>();
+        refused.put("signed with another key",
+                TestTokens.sign(someoneElsesKey, 880_003, "ADMIN", "auction-platform", inAnHour));
+        refused.put("signature altered",
+                parts[0] + "." + parts[1] + "." + parts[2].substring(0, 10) + flipped + parts[2].substring(11));
+        refused.put("payload swapped under a valid signature",
+                parts[0] + "." + TestTokens.mint(1, "ADMIN").split("\\.")[1] + "." + parts[2]);
+        refused.put("expired",
+                TestTokens.sign(TestTokens.signingKey(), 880_004, "USER", "auction-platform",
+                        Instant.now().minusSeconds(60)));
+        refused.put("issued by someone else",
+                TestTokens.sign(TestTokens.signingKey(), 880_005, "USER", "another-issuer", inAnHour));
+        refused.put("revoked at logout", revoked);
+        refused.put("not a token", "not-a-jwt");
+        refused.put("empty", "");
+
+        for (Map.Entry<String, String> token : refused.entrySet()) {
+            BACKENDS.forEach(RecordingBackend::reset);
+
+            RawHttp.Response response = send("GET", "/api/users/me", token.getValue());
+
+            assertThat(forwarded()).as("forwarded with a token that is %s", token.getKey()).isEmpty();
+            assertThat(response.status()).as("status for a token that is %s", token.getKey()).isEqualTo(401);
+            assertThat(response.body()).contains("\"code\":401");
+        }
+
+        // The control: the untouched token the altered ones were made from is accepted.
+        assertThat(send("GET", "/api/users/me", valid).status()).isEqualTo(200);
+    }
+
+    /**
+     * A proxy removes the headers a request names in its Connection header; that is what
+     * hop-by-hop means. Left alone, that lets a client with its own valid token name
+     * X-User-Id there and have the gateway delete the identity it has just derived from the
+     * token, so the service receives an authenticated request with no caller. The same
+     * trick removes any other header the service relies on, Authorization included.
+     */
+    @Test
+    void clientCannotHaveForwardedHeadersRemoved_byNamingThemInConnection() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Authorization", "Bearer " + TestTokens.mint(4343, "USER"));
+        headers.put("Connection", "X-User-Id, X-Username, x-user-roles, Authorization, close");
+
+        RawHttp.Response response = RawHttp.send(port, "GET", "/api/orders", headers);
+
+        assertThat(response.status()).isEqualTo(200);
+        RecordingBackend.Received request = backend("order-service").received().get(0);
+        assertThat(request.headers().getAll("X-User-Id")).containsExactly("4343");
+        assertThat(request.headers().getAll("X-Username")).containsExactly("u4343");
+        assertThat(request.headers().getAll("X-User-Roles")).containsExactly("USER");
+        assertThat(request.headers().get("Authorization")).as("Authorization forwarded").startsWith("Bearer ");
+    }
+
     // --- things an allow-list must not break ---------------------------------------------
 
     /**
@@ -469,6 +586,31 @@ class GatewayAllowListIT {
         assertThat(response.header("Access-Control-Allow-Origin")).isEqualTo("http://localhost:5173");
         assertThat(response.header("Access-Control-Allow-Methods")).contains("POST");
         assertThat(forwarded()).as("a preflight is answered at the gateway").isEmpty();
+    }
+
+    /**
+     * A cross-origin page can read the gateway's own 401 and 404 (they carry the CORS
+     * headers). The 400 and 403 from the path filters do not: those answer before any CORS
+     * processing, on purpose, and nothing a browser sends on its own produces them.
+     */
+    @Test
+    void corsHeaders_onResponsesTheGatewayWritesItself() {
+        Map<String, String> origin = Map.of("Origin", "http://localhost:5173");
+
+        RawHttp.Response unauthenticated = RawHttp.send(port, "GET", "/api/users/me", origin);
+        RawHttp.Response unlisted = RawHttp.send(port, "GET", "/nope", origin);
+        RawHttp.Response nonCanonical = RawHttp.send(port, "GET", "/api/tickets//reserve", origin);
+        RawHttp.Response internal = RawHttp.send(port, "GET", "/api/tickets/internal/settle-reserve", origin);
+
+        assertThat(unauthenticated.status()).isEqualTo(401);
+        assertThat(unauthenticated.header("Access-Control-Allow-Origin")).isEqualTo("http://localhost:5173");
+        assertThat(unlisted.status()).isEqualTo(404);
+        assertThat(unlisted.header("Access-Control-Allow-Origin")).isEqualTo("http://localhost:5173");
+        assertThat(nonCanonical.status()).isEqualTo(400);
+        assertThat(nonCanonical.header("Access-Control-Allow-Origin")).isNull();
+        assertThat(internal.status()).isEqualTo(403);
+        assertThat(internal.header("Access-Control-Allow-Origin")).isNull();
+        assertThat(forwarded()).isEmpty();
     }
 
     @Test
@@ -524,7 +666,7 @@ class GatewayAllowListIT {
         return routeDefinitionLocator.getRouteDefinitions().collectList().block(Duration.ofSeconds(10));
     }
 
-    /** One line per (method, path pattern) pair: "METHOD pattern -> service [public] [rate-limited]". */
+    /** One line per (method, path pattern) pair: "METHOD pattern -> service [public] [filters]". */
     private List<String> describeRouteTable() {
         List<String> lines = new ArrayList<>();
         for (RouteDefinition route : routeDefinitions()) {
@@ -532,8 +674,14 @@ class GatewayAllowListIT {
             if (Boolean.parseBoolean(String.valueOf(route.getMetadata().get("public")))) {
                 suffix += " public";
             }
-            if (route.getFilters().stream().map(FilterDefinition::getName).anyMatch("RequestRateLimiter"::equals)) {
-                suffix += " rate-limited";
+            for (FilterDefinition filter : route.getFilters()) {
+                if (filter.getName().equals("RequestRateLimiter")) {
+                    suffix += " rate-limited " + filter.getArgs().get("redis-rate-limiter.replenishRate")
+                            + "/" + filter.getArgs().get("redis-rate-limiter.burstCapacity")
+                            + " by " + filter.getArgs().get("key-resolver");
+                } else {
+                    suffix += " +" + filter.getName();
+                }
             }
             for (String method : argsOf(route, "Method")) {
                 for (String pattern : argsOf(route, "Path")) {

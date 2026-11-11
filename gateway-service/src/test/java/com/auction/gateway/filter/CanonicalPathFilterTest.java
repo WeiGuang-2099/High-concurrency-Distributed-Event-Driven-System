@@ -124,7 +124,27 @@ class CanonicalPathFilterTest {
         assertThat(chainCalled).as("chain called for %s", path).isFalse();
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(exchange.getResponse().getBodyAsString().block())
-                .isEqualTo("{\"code\":400,\"message\":\"Request path is not in canonical form\"}");
+                .startsWith("{\"code\":400,\"message\":\"Request path is not in canonical form\",\"timestamp\":\"")
+                .endsWith("\",\"traceId\":\"unknown\"}");
+    }
+
+    /** The refusal uses the envelope every other API error has, and echoes nothing it would have to escape. */
+    @Test
+    void refusalBody_echoesAPlainTraceId_andNothingElseFromTheRequest() {
+        MockServerWebExchange plain = MockServerWebExchange.from(MockServerHttpRequest
+                .method(HttpMethod.GET, URI.create("http://localhost/api/tickets//reserve"))
+                .header("X-Trace-Id", "abc-123_DEF").build());
+        MockServerWebExchange hostile = MockServerWebExchange.from(MockServerHttpRequest
+                .method(HttpMethod.GET, URI.create("http://localhost/api/tickets//reserve"))
+                .header("X-Trace-Id", "x\",\"code\":200,\"y\":\"").build());
+
+        filter.filter(plain, chain).block();
+        filter.filter(hostile, chain).block();
+
+        assertThat(plain.getResponse().getBodyAsString().block()).endsWith(",\"traceId\":\"abc-123_DEF\"}");
+        assertThat(hostile.getResponse().getBodyAsString().block())
+                .endsWith(",\"traceId\":\"unknown\"}")
+                .doesNotContain("\"code\":200");
     }
 
     @Test

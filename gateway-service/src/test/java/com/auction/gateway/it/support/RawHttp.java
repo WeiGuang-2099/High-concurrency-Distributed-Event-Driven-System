@@ -42,7 +42,12 @@ public final class RawHttp {
             request.append("Content-Type: application/json\r\n");
             request.append("Content-Length: 2\r\n");
         }
-        request.append("Connection: close\r\n\r\n");
+        // The response is read until the server closes the socket. A caller that sends its
+        // own Connection header has to include "close" in it.
+        if (headers.keySet().stream().noneMatch("Connection"::equalsIgnoreCase)) {
+            request.append("Connection: close\r\n");
+        }
+        request.append("\r\n");
         if (hasBody) {
             request.append("{}");
         }
