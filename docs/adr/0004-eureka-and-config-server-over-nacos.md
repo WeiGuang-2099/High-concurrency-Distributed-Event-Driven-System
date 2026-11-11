@@ -41,6 +41,11 @@ team that already runs Nacos, the right call would be to keep it.
 - Verified after the migration (`f2a017c`): 11-module `verify` green; 7 services registered in
   Eureka within ~10 s; gateway register -> login -> reserve returns 200 and internal endpoints
   still 403; the oversell k6 run reproduces exactly 100/2000 successes with 0 errors.
+  *Correction, 2026-11-12:* "internal endpoints still 403" was checked with the plain path only.
+  `/api/tickets/internal;x/settle-reserve` was forwarded, and the discovery locator, enabled
+  since the first commit and carried through this migration, published every service as
+  `/{service-id}/**` around the rate limiters. Both are closed by
+  [ADR-0008](0008-gateway-allow-list-and-canonical-paths.md).
 - The loopback pin that stopped services registering an unreachable virtual-adapter IP survived
   the move; it is now `eureka.instance.ip-address` rather than the Nacos equivalent. The
   underlying problem was never Nacos — it was a host with several virtual adapters, and it would

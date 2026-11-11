@@ -26,7 +26,7 @@ Auction detail — bids validated atomically by a Redis Lua script; the bid hist
 | **Microservices** | Spring Cloud 2023.0.1 | Service discovery, config, gateway |
 | **Service Discovery** | Netflix Eureka (Spring Cloud Netflix) | Service registry for gateway routing + Feign calls |
 | **Centralized Config** | Spring Cloud Config Server | Shared configuration from the `config-repo/` directory (git-backed) |
-| **API Gateway** | Spring Cloud Gateway | Routing, JWT authentication, per-user rate limiting (Redis token bucket), CORS, traceId injection |
+| **API Gateway** | Spring Cloud Gateway | Allow-list routing ([ADR-0008](docs/adr/0008-gateway-allow-list-and-canonical-paths.md)), JWT authentication, per-user rate limiting (Redis token bucket), CORS |
 | **Message Broker (Events)** | Apache Kafka 3.6.1 (KRaft mode) | Domain event propagation (bid placed, stock reserved, order created, etc.) |
 | **Message Broker (Delayed)** | RabbitMQ 3 + delayed-message-exchange plugin | Order/reservation timeout (30 min auto-cancel) |
 | **Relational DB** | MySQL 8.0 + MyBatis-Plus 3.5.6 | Transactional data (users, auctions, tickets, orders) |
@@ -141,7 +141,7 @@ Scheduler (every 1s):
 ```
 .
 ├── auction-common/            # Shared DTOs, event classes, exception handling, security context
-├── gateway-service/           # API gateway: routing, JWT verification (RSA public key), traceId filter
+├── gateway-service/           # API gateway: allow-list routing, JWT verification (RSA public key), rate limiting
 ├── user-service/              # User registration, login (RSA-signed JWT), profile management
 ├── auction-service/           # Auction CRUD, atomic bidding (Lua), lifecycle scheduler, settlement saga
 ├── ticket-service/            # Stock management, atomic reserve/confirm/cancel (Lua), timeout handling
@@ -200,7 +200,8 @@ moves to "Holds" only when a test that fails without the fix is in the repositor
 | A consumed event is either handled or dead-lettered, never skipped | Holds for event-store and notification | `EventStorePipelineIT`, `ProjectionErrorHandlingTest`, `NotificationPipelineIT` |
 | Read-model projections are idempotent under redelivery | Holds | `ProjectionIdempotencyIT` |
 | Timed-out reservations give their stock back | Holds | `StockReleaseTimeoutIT` |
-| Per-user rate limit on the reserve and bid routes | Holds on the declared routes (see gateway gap below) | `GatewayRateLimitIT`, k6 `gateway-rate-limit.js` |
+| Per-user rate limit on the reserve and bid routes | Holds | `GatewayRateLimitIT` (including the two ways around the limiter that used to work), k6 `gateway-rate-limit.js` |
+| Through the gateway, only the listed (method, path) pairs reach a service; service-to-service endpoints, reservation confirm and the benchmark endpoint do not | Holds at the gateway. The service ports themselves trust any caller (see below) | `GatewayAllowListIT` |
 | The highest accepted bid wins the auction | **Does not hold yet** | none |
 | A failed settlement is retried until it succeeds | **Does not hold yet** | `SettlementSagaIT` covers the compensation call only |
 | A payment takes effect exactly once | **Does not hold yet** | unit tests only |
@@ -214,13 +215,18 @@ Known gaps, found in a full review of this codebase and not fixed yet:
   a state the scheduler will retry.
 - **Payment.** The result of the `PAYING → PAID` compare-and-set is not enforced.
 - **Stock paths other than the main reserve.** The reserve `UPDATE` in MySQL has no availability
-  guard of its own and relies on Redis having decided; the settlement reserve does not debit
-  Redis; and the pessimistic-lock endpoint that exists for the benchmark is reachable through
-  the gateway.
-- **Reservation confirm** can be called by the buyer directly rather than only by the order
-  service after payment.
-- **Gateway.** The internal-path filter and the discovery-locator routes need hardening before
-  the gateway is exposed publicly. This project has only been run locally.
+  guard of its own and relies on Redis having decided; and the settlement reserve does not debit
+  Redis.
+- **Ticket price is supplied by the client.** `POST /api/orders` takes the amount from the
+  request and does not check the reservation it names. The gateway no longer routes reservation
+  confirm, so a ticket cannot be had with no order at all, but it can be had for any positive
+  amount.
+- **Service ports trust their caller.** The gateway is the only place identity is checked. A
+  service believes `X-User-Id` from anyone who can reach its port, and the internal endpoints
+  need no header at all. Only the network keeps a client away from them, and this project has
+  only been run locally.
+- **The event-store API has no authorisation of its own**, so the gateway does not route it. It
+  is reachable on the service port only.
 - **Order and auction lifecycle events** are still published after their MySQL write, without
   an outbox.
 - **Notifications are not idempotent.** A redelivered event stores a second notification row.
@@ -341,6 +347,12 @@ npm run dev
 
 ## API Overview
 
+Clients talk to the gateway on `:8080`. It routes an explicit list of (method, path) pairs,
+which is every row below except the ones marked "not routed"; anything else is 404. A path has
+to be in canonical form: `;`, percent-encoding, empty segments, `.` or `..` segments and a
+trailing slash are answered with 400. The reasons are in
+[ADR-0008](docs/adr/0008-gateway-allow-list-and-canonical-paths.md).
+
 All API responses use a unified envelope:
 
 ```json
@@ -372,7 +384,7 @@ All API responses use a unified envelope:
 | GET | `/{id}` | Get auction details | Required |
 | POST | `/{auctionId}/bids` | Place a bid (atomic Lua validation) | Required |
 | GET | `/{auctionId}/bids` | Bid history (username masked) | Required |
-| POST | `/admin/auctions` | Create auction | Admin |
+| POST | `/api/admin/auctions` (full path) | Create auction | Admin |
 
 ### Ticket Service (`/api/tickets`)
 
@@ -380,9 +392,9 @@ All API responses use a unified envelope:
 |--------|----------|-------------|------|
 | GET | `/events/{eventId}` | Get stock for an event | Required |
 | POST | `/reserve` | Reserve tickets (atomic Lua deduction) | Required |
-| POST | `/{reservationId}/confirm` | Confirm reservation | Required |
-| DELETE | `/{reservationId}` | Cancel reservation | Required |
-| POST | `/admin/tickets` | Create ticket stock | Admin |
+| POST | `/{reservationId}/confirm` | Confirm reservation | Not routed. order-service calls it after payment |
+| DELETE | `/{reservationId}` | Cancel reservation | Not routed. order-service calls it; a client cancels the order instead |
+| POST | `/api/admin/tickets` (full path) | Create ticket stock | Admin |
 
 ### Order Service (`/api/orders`)
 
@@ -398,10 +410,13 @@ All API responses use a unified envelope:
 
 | Method | Endpoint | Description | Auth |
 |--------|----------|-------------|------|
-| GET | `/auctions/{id}/history` | Bid history projection | Required |
-| GET | `/orders/{id}/timeline` | Order status timeline | Required |
-| GET | `/stock/{eventId}/movements` | Stock movement log | Required |
-| POST | `/admin/events/replay/{aggregateType}/{aggregateId}` | Replay aggregate state | Admin |
+| GET | `/auctions/{id}/history` | Bid history projection | Not routed |
+| GET | `/orders/{id}/timeline` | Order status timeline | Not routed |
+| GET | `/stock/{eventId}/movements` | Stock movement log | Not routed |
+| POST | `/api/admin/events/replay/{aggregateType}/{aggregateId}` (full path) | Replay aggregate state | Not routed |
+
+These four have no authorisation of their own (no ownership check, no role check), so the
+gateway does not route them. They answer on the service port, `:8085`, for local inspection.
 
 ### Notification Service (`/api/notifications`)
 
@@ -410,13 +425,18 @@ All API responses use a unified envelope:
 | GET | `/` | List notifications | Required |
 | PUT | `/{id}/read` | Mark notification as read | Required |
 
-Real-time notifications are pushed via WebSocket (STOMP) at `ws://localhost:8084/ws`.
+Real-time notifications are pushed over STOMP on a SockJS endpoint, `/ws/notifications`, reached
+through the gateway (`http://localhost:8080/ws/notifications`). A browser cannot attach an
+`Authorization` header to the handshake, so these routes are public at the HTTP layer and the
+JWT is checked on the STOMP `CONNECT` frame.
 
 ## Testing
 
 ### Unit Tests
 
-118 unit tests across 6 services, all passing:
+209 unit tests across 6 services, all passing. The count is what JUnit reports, so each case
+of a parameterised test counts once; most of the gateway's are of that kind (one case per path
+shape).
 
 | Service | Test File | Tests | Coverage |
 |---------|-----------|-------|----------|
@@ -431,7 +451,11 @@ Real-time notifications are pushed via WebSocket (STOMP) at `ws://localhost:8084
 | order-service | `OrderServiceImplTest` | 30 | Create, pay (success/failure/idempotent/CAS), cancel, expire, state machine transitions |
 | event-store-service | `EventStoreConsumerTest` | 3 | Append failure propagates (retry/DLT), never ack-and-drop |
 | event-store-service | `ProjectionErrorHandlingTest` | 8 | Each projection: a write failure must propagate and must not ack |
-| gateway-service | `InternalApiBlockFilterTest` | 5 | Internal saga endpoints blocked from external access |
+| gateway-service | `CanonicalPathFilterTest` | 60 | Which raw paths count as canonical; `;`, `%`, empty and dot segments, a trailing slash are refused |
+| gateway-service | `InternalApiBlockFilterTest` | 23 | An `internal` segment is refused however it is spelled (`;x`, `%69`, another case, inside a forwarded prefix) |
+| gateway-service | `ConnectionHeaderFilterTest` | 6 | A client cannot have a forwarded header removed by naming it in `Connection` |
+| gateway-service | `FallbackHandlerTest` | 5 | No matching route is 404; a real failure is still 503 |
+| gateway-service | `ConfigRepoLeavesRoutingAloneTest` | 2 | `config-repo/` carries no gateway routing key, and the check sees keys of any value type |
 
 ```bash
 mvn test
@@ -439,9 +463,10 @@ mvn test
 
 ### Integration Tests (Testcontainers)
 
-36 tests across 11 classes, run by `mvn verify` against real MySQL / Redis / Kafka / MongoDB /
-RabbitMQ containers. These exist because the failures worth catching here are the ones a mock
-cannot have: at-least-once redelivery, a dead consumer, a broker that is down.
+202 tests across 12 classes, run by `mvn verify` against real MySQL / Redis / Kafka / MongoDB /
+RabbitMQ containers; 163 of them are the cases of `GatewayAllowListIT`, one per path or
+endpoint. These exist because the failures worth catching here are the ones a mock cannot have:
+at-least-once redelivery, a dead consumer, a broker that is down.
 
 Two of them exist because a component passed its own tests while never running in the real
 service. The ticket outbox relay had a test that called it by hand, and no scheduler was enabled
@@ -449,6 +474,14 @@ to call it in production. The notification listeners had no test at all, and a l
 in the wrong ack mode dead-lettered every record before the handler ran. Both services started
 cleanly and logged nothing. `OutboxRelayScheduleIT` and `NotificationPipelineIT` drive each
 component through its real trigger and assert only on the observable result.
+
+The gateway had the same problem in a third form. `GatewayRateLimitIT` switched the discovery
+locator off in its own properties, so it tested a gateway production did not run, and the
+locator's routes went around the limiter it was testing. `GatewayAllowListIT` boots the shipped
+configuration, adds what the config server would serve, and sends its requests over a raw
+socket, because the usual test clients tidy a path such as `/api/tickets//reserve` before it
+leaves the JVM. After the fix each change was reverted on its own to check that a test failed;
+one test did not, and turned out to be blind to the exact value it was written to catch.
 
 | Service | Test | What it pins down |
 |---------|------|-------------------|
@@ -461,7 +494,8 @@ component through its real trigger and assert only on the observable result.
 | auction-service | `BidOutboxIT` | Accept and record are atomic; a bid orphaned by a crashed relay is reclaimed and published |
 | event-store-service | `EventStorePipelineIT` | Kafka → Mongo end to end, and a poisoned event reaches the DLT |
 | event-store-service | `ProjectionIdempotencyIT` | Redelivery leaves one row, does not inflate `bidCount`, does not regress a SETTLED auction |
-| gateway-service | `GatewayRateLimitIT` | Per-user token bucket with real Redis and real JWTs |
+| gateway-service | `GatewayRateLimitIT` | Per-user token bucket with real Redis and real JWTs; the two paths that used to go around it (`/{service-id}/**`, an empty path segment) reach nothing; a listed route whose service is down is 503 |
+| gateway-service | `GatewayAllowListIT` | The route table is exactly the allow-list; every listed endpoint reaches its own service and needs a token unless marked public; unlisted, internal and non-canonical requests are refused and never forwarded; bad tokens are 401; identity headers come only from the token |
 | notification-service | `NotificationPipelineIT` | A Kafka event becomes a stored notification through the real listeners and is not dead-lettered; one whose handling keeps failing is dead-lettered after its retries and logged |
 
 ```bash
@@ -492,8 +526,8 @@ k6 run --local-ips=127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5 -e ITERATIONS=20000 -
 | P5 | Event log (MongoDB append-only, CQRS projections, replay) | Done |
 | P6 | Frontend (React SPA, WebSocket notifications) | Done |
 | P7 | Observability (distributed tracing, structured logging, rate limiting) | Micrometer+Brave+Zipkin tracing, structured JSON logging to ELK, and gateway per-user rate limiting (Spring Cloud Gateway RequestRateLimiter + Redis token bucket) done; Kibana dashboards pending |
-| P8 | Testing (unit, integration, K6 load tests) | Done — 118 unit tests + 36 Testcontainers integration tests (`mvn verify`) + k6 load tests (zero oversell, optimistic-vs-pessimistic, gateway rate limiting, auction-bid throughput with no-lost-bids invariant) |
-| P9 | README, architecture decision records, demo guide | This README + [7 ADRs](docs/adr/); rendered diagrams and demo guide pending |
+| P8 | Testing (unit, integration, K6 load tests) | Done — 209 unit tests + 202 Testcontainers integration tests (`mvn verify`) + k6 load tests (zero oversell, optimistic-vs-pessimistic, gateway rate limiting, auction-bid throughput with no-lost-bids invariant) |
+| P9 | README, architecture decision records, demo guide | This README + [8 ADRs](docs/adr/); rendered diagrams and demo guide pending |
 | P10 | Event durability (transactional outbox) | Bid path done (Redis Stream, [ADR-0005](docs/adr/0005-redis-stream-outbox-for-bid-durability.md)); ticket path done (MySQL table, [ADR-0007](docs/adr/0007-transactional-outbox-for-mysql-backed-paths.md)); **order and auction lifecycle events still publish after their MySQL write and keep the dual-write gap** |
 | P11 | Cloud deployment (AWS, Terraform) | Not started |
 

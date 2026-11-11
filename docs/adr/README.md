@@ -14,8 +14,10 @@ re-checked rather than believed.
 | [0005](0005-redis-stream-outbox-for-bid-durability.md) | Make accepted bids durable with a Redis Stream outbox | Accepted |
 | [0006](0006-dead-letter-rather-than-skip.md) | A consumer that cannot process an event must dead-letter it, never skip it | Accepted |
 | [0007](0007-transactional-outbox-for-mysql-backed-paths.md) | Use a transactional outbox table on the MySQL-backed paths | Accepted (ticket done; order/auction open) |
+| [0008](0008-gateway-allow-list-and-canonical-paths.md) | The gateway routes an allow-list and refuses paths that are not canonical | Accepted |
 
 Two of these record a reversal (0003, 0004), and two record a bug class that survived a first fix
 (0005, 0006). 0005 and 0007 are two outbox implementations in one system, and the reason there are
-two — different sources of truth — is the interesting part. That is the point of keeping them: the
-reasoning that led somewhere wrong, or somewhere unobvious, is worth more than a tidy story.
+two — different sources of truth — is the interesting part. 0008 replaces a deny-list that five
+different requests got around. That is the point of keeping them: the reasoning that led somewhere
+wrong, or somewhere unobvious, is worth more than a tidy story.
