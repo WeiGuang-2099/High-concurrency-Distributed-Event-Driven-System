@@ -1,17 +1,14 @@
 package com.auction.gateway.it;
 
+import com.auction.gateway.it.support.RawHttp;
+import com.auction.gateway.it.support.TestTokens;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
-import com.nimbusds.jose.JOSEObjectType;
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.crypto.RSASSASigner;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -21,16 +18,11 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.security.KeyStore;
-import java.security.interfaces.RSAPrivateKey;
-import java.time.Instant;
-import java.util.Date;
-import java.util.UUID;
+import java.util.Map;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.any;
+import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
@@ -57,11 +49,12 @@ import static org.assertj.core.api.Assertions.fail;
                 "rate-limit.reserve.burst=3",
                 "rate-limit.bid.replenish=1",
                 "rate-limit.bid.burst=3",
-                // Keep the test hermetic: no config-server fetch, no Eureka, no
-                // discovery-locator routes on top of the declared ones.
+                // Hermetic stand-ins only: no config-server fetch, no Eureka. The route
+                // table and the discovery-locator setting are the shipped ones. This test
+                // used to switch the locator off here, and so never saw that production
+                // had it on, with /{service-id}/** routes going around the limiter.
                 "spring.cloud.config.enabled=false",
                 "eureka.client.enabled=false",
-                "spring.cloud.gateway.discovery.locator.enabled=false",
                 "management.tracing.enabled=false"
         })
 class GatewayRateLimitIT {
@@ -81,6 +74,10 @@ class GatewayRateLimitIT {
                 .willReturn(okJson("{\"code\":200,\"message\":\"OK\",\"data\":null}")));
         BACKEND.stubFor(get(urlPathMatching("/api/tickets/events/\\d+"))
                 .willReturn(okJson("{\"code\":200,\"message\":\"OK\",\"data\":[]}")));
+        // Lowest priority: anything else that reaches the backend is answered 200 too, so a
+        // request that got around the limiter shows up as a success, not as a stub's 404.
+        BACKEND.stubFor(any(anyUrl()).atPriority(10)
+                .willReturn(okJson("{\"code\":200,\"message\":\"OK\",\"data\":null}")));
     }
 
     @DynamicPropertySource
@@ -93,6 +90,9 @@ class GatewayRateLimitIT {
 
     @Autowired
     WebTestClient webTestClient;
+
+    @LocalServerPort
+    int port;
 
     @BeforeEach
     void resetDownstreamRequestLog() {
@@ -182,6 +182,47 @@ class GatewayRateLimitIT {
         }
     }
 
+    /**
+     * The gateway drops empty path segments when it builds the outgoing URL, after route
+     * matching. While a wildcard route existed, /api/tickets//reserve missed the limited
+     * route, matched the wildcard, and reached the service as /api/tickets/reserve with no
+     * limit at all. Sent over a raw socket: WebTestClient would collapse the "//" itself.
+     */
+    @Test
+    void emptySegmentAlias_cannotGoAroundTheLimiter() {
+        Map<String, String> auth = Map.of("Authorization", "Bearer " + mintToken(501));
+
+        for (int i = 0; i < 15; i++) {
+            assertThat(RawHttp.send(port, "POST", "/api/tickets//reserve", auth).status()).isEqualTo(400);
+            assertThat(RawHttp.send(port, "POST", "/api/auctions//7/bids", auth).status()).isEqualTo(400);
+            assertThat(RawHttp.send(port, "POST", "/api/auctions/7//bids", auth).status()).isEqualTo(400);
+        }
+
+        assertThat(BACKEND.countRequestsMatching(anyRequestedFor(anyUrl()).build()).getCount())
+                .as("requests that reached a service around the limiter")
+                .isZero();
+    }
+
+    /**
+     * With the discovery locator on, every registered service is also published as
+     * /{service-id}/**, on a route that carries no rate limiter.
+     */
+    @Test
+    void discoveryLocatorPath_cannotGoAroundTheLimiter() {
+        Map<String, String> auth = Map.of("Authorization", "Bearer " + mintToken(502));
+
+        for (int i = 0; i < 15; i++) {
+            assertThat(RawHttp.send(port, "POST", "/ticket-service/api/tickets/reserve", auth).status())
+                    .isEqualTo(404);
+            assertThat(RawHttp.send(port, "POST", "/auction-service/api/auctions/7/bids", auth).status())
+                    .isEqualTo(404);
+        }
+
+        assertThat(BACKEND.countRequestsMatching(anyRequestedFor(anyUrl()).build()).getCount())
+                .as("requests that reached a service around the limiter")
+                .isZero();
+    }
+
     private FluxExchangeResult<String> postReserve(String token) {
         return webTestClient.post().uri("/api/tickets/reserve")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
@@ -191,57 +232,7 @@ class GatewayRateLimitIT {
                 .returnResult(String.class);
     }
 
-    // --- JWT minting against the real user-service keystore -------------------------
-
-    private static final RSAPrivateKey PRIVATE_KEY = loadPrivateKey();
-
-    /** Same claims user-service's JwtTokenProvider issues, so the gateway accepts it. */
     private static String mintToken(long userId) {
-        try {
-            JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                    .subject(String.valueOf(userId))
-                    .claim("username", "u" + userId)
-                    .claim("roles", "USER")
-                    .claim("jti", UUID.randomUUID().toString().replace("-", ""))
-                    .issuer("auction-platform")
-                    .issueTime(new Date())
-                    .expirationTime(Date.from(Instant.now().plusSeconds(3600)))
-                    .build();
-            SignedJWT jwt = new SignedJWT(
-                    new JWSHeader.Builder(JWSAlgorithm.RS256).type(JOSEObjectType.JWT).build(), claims);
-            jwt.sign(new RSASSASigner(PRIVATE_KEY));
-            return jwt.serialize();
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to mint test JWT", e);
-        }
-    }
-
-    private static RSAPrivateKey loadPrivateKey() {
-        try {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            try (InputStream is = Files.newInputStream(
-                    repoFile("user-service/src/main/resources/keys/jwt-keystore.p12"))) {
-                keyStore.load(is, "auction2024".toCharArray());
-            }
-            return (RSAPrivateKey) keyStore.getKey("jwt-key", "auction2024".toCharArray());
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to load user-service JWT keystore", e);
-        }
-    }
-
-    /**
-     * Failsafe runs with the module directory as working directory; the keystore lives
-     * in the user-service module, so walk upwards to the repo root first.
-     */
-    private static Path repoFile(String relative) {
-        Path dir = Paths.get("").toAbsolutePath();
-        while (dir != null) {
-            Path candidate = dir.resolve(relative);
-            if (Files.exists(candidate)) {
-                return candidate;
-            }
-            dir = dir.getParent();
-        }
-        throw new IllegalStateException("Cannot locate " + relative + " above " + Paths.get("").toAbsolutePath());
+        return TestTokens.mint(userId);
     }
 }

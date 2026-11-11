@@ -10,34 +10,69 @@ spring:
     import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
   cloud:
     gateway:
-      discovery:
-        locator:
-          enabled: true
-          lower-case-service-id: true
+      # The route table below is an allow-list. A request reaches a service only if its
+      # method and exact path are listed here; everything else is 404 at the gateway.
+      #
+      # Rules for anyone editing it:
+      #   - One entry per (method, exact path). No "*" or "**": a wildcard is how
+      #     /api/tickets/internal/..., /api/tickets/{id}/confirm and the benchmark endpoint
+      #     became public without anyone listing them.
+      #   - Every route has a Method predicate.
+      #   - Numeric ids are written {name:[0-9]+}. Do not use a regex containing a comma
+      #     (such as [0-9]{1,18}) in this shortcut form: the comma splits the pattern and
+      #     the gateway refuses to start.
+      #   - A route needs a valid JWT unless it says "metadata: public: true".
+      #   - GatewayAllowListIT holds a second copy of this list and fails until both agree.
+      #
+      # Not listed on purpose:
+      #   - /api/*/internal/**                      service-to-service saga steps
+      #   - POST /api/tickets/{id}/confirm          called by order-service after payment
+      #   - DELETE /api/tickets/{id}                a reservation is released through its order
+      #   - POST /api/tickets/reserve-pessimistic   benchmark only, k6 uses the service port
+      #   - /api/event-store/**, /api/admin/events/**   no authorisation of their own yet
+      #
+      # There is no discovery locator (spring.cloud.gateway.discovery.locator.enabled is off
+      # by default and must stay off): it publishes every registered service wholesale as
+      # /{service-id}/**, around this list and around the rate limiters.
+      #
+      # Paths are checked for canonical form before routing (CanonicalPathFilter), so the
+      # patterns below never see ";", "%", "//", "." / ".." segments or a trailing slash.
       routes:
-        # Hot write paths get a per-user Redis token bucket (RequestRateLimiter).
-        # order: -1 makes these match ahead of the service-wide routes below
-        # (default order 0). Keyed by the JWT-derived X-User-Id header via
-        # userKeyResolver; over-limit requests get 429 + X-RateLimit-* headers
-        # without ever reaching the service. Rates are per user, per second.
-        - id: ticket-reserve-limited
-          uri: lb://ticket-service
-          order: -1
+        # ---- user-service ----------------------------------------------------------
+        - id: user-register-login
+          uri: lb://user-service
           predicates:
-            - Path=/api/tickets/reserve,/api/tickets/reserve-pessimistic
+            - Path=/api/users/register,/api/users/login
             - Method=POST
-          filters:
-            - name: RequestRateLimiter
-              args:
-                key-resolver: "#{@userKeyResolver}"
-                redis-rate-limiter.replenishRate: ${rate-limit.reserve.replenish:5}
-                redis-rate-limiter.burstCapacity: ${rate-limit.reserve.burst:10}
+          metadata:
+            public: true
 
+        - id: user-logout
+          uri: lb://user-service
+          predicates:
+            - Path=/api/users/logout
+            - Method=POST
+
+        - id: user-profile
+          uri: lb://user-service
+          predicates:
+            - Path=/api/users/me
+            - Method=GET,PUT
+
+        # ---- auction-service -------------------------------------------------------
+        - id: auction-read
+          uri: lb://auction-service
+          predicates:
+            - Path=/api/auctions,/api/auctions/hot,/api/auctions/{id:[0-9]+},/api/auctions/{auctionId:[0-9]+}/bids
+            - Method=GET
+
+        # Hot write path: per-user Redis token bucket (RequestRateLimiter), keyed by the
+        # JWT-derived X-User-Id header via userKeyResolver. Over-limit requests get 429 +
+        # X-RateLimit-* headers without reaching the service. Rates are per user, per second.
         - id: auction-bid-limited
           uri: lb://auction-service
-          order: -1
           predicates:
-            - Path=/api/auctions/*/bids
+            - Path=/api/auctions/{auctionId:[0-9]+}/bids
             - Method=POST
           filters:
             - name: RequestRateLimiter
@@ -46,52 +81,99 @@ spring:
                 redis-rate-limiter.replenishRate: ${rate-limit.bid.replenish:10}
                 redis-rate-limiter.burstCapacity: ${rate-limit.bid.burst:20}
 
-        - id: auction-service
+        # The admin role is checked by the service (AdminAuctionController).
+        - id: auction-admin-create
           uri: lb://auction-service
           predicates:
-            - Path=/api/auctions/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/admin/auctions
+            - Method=POST
 
-        - id: ticket-service
+        # ---- ticket-service --------------------------------------------------------
+        - id: ticket-stock-read
           uri: lb://ticket-service
           predicates:
-            - Path=/api/tickets/**,/api/admin/tickets/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/tickets/events/{eventId:[0-9]+}
+            - Method=GET
 
-        - id: order-service
+        # Hot write path, rate limited like the bid route above.
+        - id: ticket-reserve-limited
+          uri: lb://ticket-service
+          predicates:
+            - Path=/api/tickets/reserve
+            - Method=POST
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: ${rate-limit.reserve.replenish:5}
+                redis-rate-limiter.burstCapacity: ${rate-limit.reserve.burst:10}
+
+        # The admin role is checked by the service (AdminTicketController).
+        - id: ticket-admin-create
+          uri: lb://ticket-service
+          predicates:
+            - Path=/api/admin/tickets
+            - Method=POST
+
+        # ---- order-service ---------------------------------------------------------
+        - id: order-collection
           uri: lb://order-service
           predicates:
-            - Path=/api/orders/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/orders
+            - Method=GET,POST
 
-        - id: user-service
-          uri: lb://user-service
+        - id: order-read
+          uri: lb://order-service
           predicates:
-            - Path=/api/users/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/orders/{id:[0-9]+}
+            - Method=GET
 
-        - id: notification-service
+        - id: order-pay-cancel
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/{id:[0-9]+}/pay,/api/orders/{id:[0-9]+}/cancel
+            - Method=POST
+
+        # ---- notification-service --------------------------------------------------
+        - id: notification-list
           uri: lb://notification-service
           predicates:
-            - Path=/api/notifications/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/notifications
+            - Method=GET
 
-        # SockJS/STOMP WebSocket endpoint. HTTP-level JWT is skipped for /ws/**
-        # (browser WS handshake cannot carry an Authorization header); auth is
-        # enforced by notification-service on the STOMP CONNECT frame instead.
-        - id: notification-websocket
+        # {id} is a MongoDB document id, not a number.
+        - id: notification-mark-read
           uri: lb://notification-service
           predicates:
-            - Path=/ws/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/notifications/{id}/read
+            - Method=PUT
+
+        # SockJS/STOMP endpoint: the info probe, the WebSocket transport, and the HTTP
+        # fallbacks sockjs-client switches to when a proxy blocks WebSocket. Public at the
+        # HTTP layer because a browser cannot attach an Authorization header to these;
+        # notification-service checks the JWT on the STOMP CONNECT frame instead
+        # (WebSocketAuthInterceptor).
+        - id: notification-sockjs-get
+          uri: lb://notification-service
+          predicates:
+            - Path=/ws/notifications/info,/ws/notifications/{server}/{session}/websocket,/ws/notifications/{server}/{session}/eventsource
+            - Method=GET
+          metadata:
+            public: true
+
+        - id: notification-sockjs-post
+          uri: lb://notification-service
+          predicates:
+            - Path=/ws/notifications/{server}/{session}/xhr,/ws/notifications/{server}/{session}/xhr_send,/ws/notifications/{server}/{session}/xhr_streaming
+            - Method=POST
+          metadata:
+            public: true
 
       globalcors:
+        # Every route has a Method predicate, so an OPTIONS preflight matches none of them.
+        # This registers the CORS configuration for unrouted requests too; without it a
+        # cross-origin browser gets a bare 403 on preflight.
+        add-to-simple-url-handler-mapping: true
         cors-configurations:
           '[/**]':
             # allowed-origins "*" is rejected by Spring when allow-credentials is true
