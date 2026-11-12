@@ -26,7 +26,8 @@ export default defineConfig({
         changeOrigin: true,
       },
       // WebSocket (SockJS + STOMP) proxied to the gateway service.
-      // The gateway forwards /ws/** to notification-service.
+      // The gateway routes the SockJS paths under /ws/notifications (info, websocket,
+      // eventsource, xhr, xhr_send, xhr_streaming) to notification-service.
       '/ws': {
         target: 'http://localhost:8080',
         changeOrigin: true,

@@ -1,4 +1,4 @@
-import { del, get, post } from './client';
+import { get, post } from './client';
 import type { ReserveRequest, ReserveResponse, TicketStock } from '@/types';
 
 /**
@@ -15,16 +15,6 @@ export function reserve(payload: ReserveRequest): Promise<ReserveResponse> {
   return post<ReserveResponse>('/api/tickets/reserve', payload);
 }
 
-/**
- * POST /api/tickets/{reservationId}/confirm
- */
-export function confirmReservation(reservationId: number | string): Promise<void> {
-  return post<void>(`/api/tickets/${reservationId}/confirm`);
-}
-
-/**
- * DELETE /api/tickets/{reservationId}
- */
-export function cancelReservation(reservationId: number | string): Promise<void> {
-  return del<void>(`/api/tickets/${reservationId}`);
-}
+// Confirming and releasing a reservation are not client calls. The gateway does not route
+// POST /api/tickets/{id}/confirm or DELETE /api/tickets/{id}: order-service confirms after
+// payment, and a reservation is released by cancelling its order (cancelOrder in order.ts).

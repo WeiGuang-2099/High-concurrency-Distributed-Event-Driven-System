@@ -146,6 +146,13 @@ against a real Redis container): burst-then-429 per user, throttled requests nev
 backend, per-user isolation, an independent bucket on the bid route, and non-hot routes bypassing
 the limiter entirely.
 
+*Correction, 2026-11-12:* when this scenario was run there were two ways around the limiter, and
+neither the k6 script nor the integration test of the time could see them. The discovery locator
+published `/ticket-service/api/tickets/reserve` on a route with no limiter, and an empty path
+segment (`/api/tickets//reserve`) missed the limited route while still reaching the service. Both
+are closed and both are now cases in `GatewayRateLimitIT`; see
+[ADR-0008](../docs/adr/0008-gateway-allow-list-and-canonical-paths.md).
+
 ## Scenario 5 — Auction bid throughput (pure-Redis hot path)
 
 Run 2026-07-06. `VUS=200, ITERATIONS=20000`, every bid against **one** auction, hitting

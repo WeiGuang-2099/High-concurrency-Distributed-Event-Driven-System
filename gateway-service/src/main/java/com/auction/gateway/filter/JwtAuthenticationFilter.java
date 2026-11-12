@@ -1,6 +1,7 @@
 package com.auction.gateway.filter;
 
 import com.auction.common.dto.ErrorResponse;
+import com.auction.common.security.GatewayHeaders;
 import com.auction.gateway.config.JwtProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.cloud.gateway.route.Route;
+import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -24,17 +27,28 @@ import java.io.ByteArrayInputStream;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPublicKey;
-import java.util.Set;
 
+/**
+ * Verifies the bearer token on every routed request and hands the caller's identity to the
+ * service as X-User-Id / X-Username / X-User-Roles, which the services trust.
+ *
+ * <p>A route needs a token unless its definition in application.yml says
+ * {@code metadata.public: true}. The exemption used to be decided here from the path
+ * ({@code /api/users/login}, anything under {@code /ws/}, anything starting with
+ * {@code /actuator}), which made a second list that had to agree with the routes and
+ * defaulted to open: a new route under an exempt prefix was public without anyone saying
+ * so. Now the route table is the only list and the default is closed.
+ *
+ * <p>The identity headers only ever come from a verified token. They are overwritten on
+ * authenticated routes and removed on public ones, so a client cannot supply its own.
+ */
 @Component
 public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
-    private static final Set<String> PUBLIC_PATHS = Set.of(
-            "/api/users/register",
-            "/api/users/login"
-    );
+    /** Route metadata key in application.yml that exempts a route from authentication. */
+    static final String PUBLIC_ROUTE_METADATA_KEY = "public";
 
     private final JwtProperties jwtProperties;
     private final ReactiveStringRedisTemplate reactiveStringRedisTemplate;
@@ -71,14 +85,15 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        String path = exchange.getRequest().getURI().getPath();
-
-        // Skip auth for public endpoints and actuator. /ws/** is exempt at the
-        // HTTP layer because the browser WebSocket/SockJS handshake cannot set
-        // an Authorization header; notification-service validates the JWT on
-        // the STOMP CONNECT frame instead (WebSocketAuthInterceptor).
-        if (PUBLIC_PATHS.contains(path) || path.startsWith("/actuator") || path.startsWith("/ws/")) {
-            return chain.filter(exchange);
+        if (isPublicRoute(exchange)) {
+            ServerWebExchange withoutIdentity = exchange.mutate()
+                    .request(builder -> builder.headers(headers -> {
+                        headers.remove(GatewayHeaders.USER_ID);
+                        headers.remove(GatewayHeaders.USERNAME);
+                        headers.remove(GatewayHeaders.USER_ROLES);
+                    }))
+                    .build();
+            return chain.filter(withoutIdentity);
         }
 
         // Extract Authorization header
@@ -125,9 +140,9 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
                             ServerWebExchange mutatedExchange = exchange.mutate()
                                     .request(builder -> builder
-                                            .header("X-User-Id", userId)
-                                            .header("X-Username", username)
-                                            .header("X-User-Roles", roles))
+                                            .header(GatewayHeaders.USER_ID, userId)
+                                            .header(GatewayHeaders.USERNAME, username)
+                                            .header(GatewayHeaders.USER_ROLES, roles))
                                     .build();
 
                             return chain.filter(mutatedExchange);
@@ -139,6 +154,20 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         } catch (Exception e) {
             return writeUnauthorized(exchange, "Invalid token");
         }
+    }
+
+    /**
+     * True only when the matched route is marked public in its definition. A request with no
+     * matched route never gets here (global filters run after route matching), but if it
+     * did it would need a token like any other.
+     */
+    private static boolean isPublicRoute(ServerWebExchange exchange) {
+        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+        if (route == null) {
+            return false;
+        }
+        Object flag = route.getMetadata().get(PUBLIC_ROUTE_METADATA_KEY);
+        return flag != null && Boolean.parseBoolean(flag.toString());
     }
 
     private Mono<Void> writeUnauthorized(ServerWebExchange exchange, String message) {
